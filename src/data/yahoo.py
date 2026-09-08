@@ -6,44 +6,14 @@ at module load, so a machine with no ``yfinance`` installed can still run
 ``main.py`` and ``trade.py`` without ever noticing this module exists.
 """
 
-from datetime import datetime, time, timedelta
+from datetime import timedelta
 from decimal import Decimal
-from zoneinfo import ZoneInfo
 
 from src.data.errors import DataUnavailableError
+from src.data.sessions import last_closed_session_date
 from src.strategy.bars import Bar, PriceHistory
 
 NAME = "yahoo"
-
-#: Every symbol this project trades is US-listed, so "has this session
-#: closed?" is a question about one exchange calendar. A non-US name would
-#: need a per-symbol timezone here rather than this constant.
-EXCHANGE_TZ = ZoneInfo("America/New_York")
-
-#: The US regular session close, plus room for Yahoo to finish writing the
-#: bar it stamps with that date - it settles a few minutes after the bell,
-#: not on it.
-REGULAR_CLOSE = time(16, 0)
-SETTLE_BUFFER = timedelta(minutes=15)
-
-
-def last_closed_session_date(now=None):
-    """The most recent date whose US regular session has finished.
-
-    A daily bar for a session still in progress is a *partial* bar: its close
-    is the last trade so far, not the day's close. That matters here more than
-    it looks, because strategies anchor their notion of "today" to the last
-    bar's date (``bucket_dca.evaluate``). Let a partial bar in and the
-    rebalance weekday shifts by a day and momentum is scored on an unfinished
-    candle - and whether that happens depends on *what time of day the batch
-    runs*, which is not a property a strategy should have.
-
-    Weekends and holidays need no special case: no bar carries a date the
-    exchange did not trade, so a cutoff landing on one filters nothing.
-    """
-    now = datetime.now(EXCHANGE_TZ) if now is None else now.astimezone(EXCHANGE_TZ)
-    settled = datetime.combine(now.date(), REGULAR_CLOSE, EXCHANGE_TZ) + SETTLE_BUFFER
-    return now.date() if now >= settled else now.date() - timedelta(days=1)
 
 
 def _to_decimal(value):

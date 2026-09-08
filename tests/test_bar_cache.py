@@ -151,7 +151,7 @@ def test_refresh_raises_without_a_configured_source(cache):
 def test_refresh_fetches_missing_range_and_populates_the_cache(cache):
     series = {"QQQ": [bar(date(2026, 1, d), "100") for d in range(1, 11)]}
     source = FakeSource(series)
-    loader = HistoryLoader(cache, source=source, staleness_days=0)
+    loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 10))
     added = loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 10))
     assert added["QQQ"] == 10
     assert len(cache.bars("QQQ")) == 10
@@ -161,21 +161,66 @@ def test_refresh_only_fetches_the_gap_since_last_coverage(cache):
     cache.upsert("QQQ", [bar(date(2026, 1, 1), "100")], source="test")
     series = {"QQQ": [bar(date(2026, 1, d), "100") for d in range(1, 6)]}
     source = FakeSource(series)
-    loader = HistoryLoader(cache, source=source, staleness_days=0)
+    loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 5))
     loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 5))
     fetched_symbol, fetched_start, fetched_end = source.calls[0]
     assert fetched_start == date(2026, 1, 2)  # the day after existing coverage
 
 
-def test_refresh_skips_a_symbol_that_is_fresh_enough(cache):
+def test_refresh_skips_a_symbol_already_at_the_last_closed_session(cache):
     cache.upsert("QQQ", [bar(date(2026, 1, 5), "100")], source="test")
-    loader = HistoryLoader(cache, source=RaisingSource(), staleness_days=30)
+    loader = HistoryLoader(
+        cache, source=RaisingSource(), session_cutoff=lambda: date(2026, 1, 5)
+    )
     added = loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 6))
     assert added["QQQ"] == 0
 
 
+def test_refresh_fetches_a_cache_one_session_behind_however_recent_it_is(cache):
+    """The regression this rule exists for.
+
+    The old rule skipped a symbol whose tail was within ``staleness_days`` of
+    ``end``, which is a statement about the request rather than about the
+    market. Since this is the only thing that refreshes bars, the cache then
+    sat on Monday's bar all week, strategies read "today is Monday" on
+    Tuesday, Wednesday and Thursday alike, and the weekly rebalance fired
+    three times instead of once.
+    """
+    cache.upsert("QQQ", [bar(date(2026, 1, 5), "100")], source="test")
+    series = {"QQQ": [bar(date(2026, 1, d), "100") for d in range(5, 7)]}
+    source = FakeSource(series)
+    loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 6))
+
+    added = loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 6))
+
+    assert added["QQQ"] == 1
+    assert source.calls[0][1] == date(2026, 1, 6)  # only the missing tail
+    assert cache.coverage("QQQ")[1] == date(2026, 1, 6)
+
+
+def test_the_offline_staleness_window_does_not_govern_refresh(cache):
+    """``staleness_days`` is about reading an offline cache, nothing more.
+
+    A generous window used to mean a stale live cache; it must now mean
+    nothing at all to the fetch decision.
+    """
+    cache.upsert("QQQ", [bar(date(2026, 1, 5), "100")], source="test")
+    series = {"QQQ": [bar(date(2026, 1, 6), "100")]}
+    source = FakeSource(series)
+    loader = HistoryLoader(
+        cache,
+        source=source,
+        staleness_days=30,
+        session_cutoff=lambda: date(2026, 1, 6),
+    )
+
+    assert loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 6))["QQQ"] == 1
+
+
 def test_a_symbol_the_source_cannot_fetch_is_absent_not_fatal(cache):
-    loader = HistoryLoader(cache, source=FakeSource({}), staleness_days=0)
+    loader = HistoryLoader(
+        cache, source=FakeSource({}), session_cutoff=lambda: date(2026, 1, 10)
+    )
     added = loader.refresh(["NOPE"], date(2026, 1, 1), date(2026, 1, 10))
     assert added["NOPE"] == 0
     assert "NOPE" not in loader.load(["NOPE"], date(2026, 1, 1), date(2026, 1, 10))

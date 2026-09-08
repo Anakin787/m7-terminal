@@ -98,7 +98,10 @@ def _make_previous_close_fn():
             from src.data.loader import HistoryLoader
             from src.data.yahoo import YahooBarSource
 
-            loader = HistoryLoader(BarCache(), YahooBarSource(), staleness_days=1)
+            # No staleness window: the loader now tops up whenever the cache
+            # stops short of the last closed session, which is what the
+            # 1-day window here was reaching for.
+            loader = HistoryLoader(BarCache(), YahooBarSource())
             state["loader"] = loader
 
         end = date.today()

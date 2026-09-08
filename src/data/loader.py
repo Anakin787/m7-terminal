@@ -9,17 +9,27 @@ bar mid-backtest would not.
 from datetime import timedelta
 
 from src.data.errors import DataUnavailableError
+from src.data.sessions import last_closed_session_date
 from src.strategy.bars import as_date
 
 
 class HistoryLoader:
-    """Reads :class:`~src.data.cache.BarCache`, refreshing from ``source`` on demand."""
+    """Reads :class:`~src.data.cache.BarCache`, refreshing from ``source`` on demand.
 
-    def __init__(self, cache, source=None, offline=False, staleness_days=3):
+    ``staleness_days`` governs the *offline* read only - how far the tail of a
+    cached series may lag the requested ``end`` before the symbol is dropped.
+    It deliberately has no say over :meth:`refresh`; see that method for why.
+    """
+
+    def __init__(
+        self, cache, source=None, offline=False, staleness_days=3, session_cutoff=None
+    ):
         self.cache = cache
         self.source = source
         self.offline = offline
         self.staleness_days = staleness_days
+        #: Injectable so tests can state a date instead of waiting for one.
+        self.session_cutoff = session_cutoff or last_closed_session_date
 
     def load(self, symbols, start, end):
         """``{symbol: PriceHistory}`` for every symbol, from the cache alone.
@@ -69,20 +79,42 @@ class HistoryLoader:
         Returns ``{symbol: bar_count_added}``. Raises if a source was never
         configured - refreshing with no source is a configuration mistake,
         not a data gap.
+
+        "Missing" is measured against the **exchange**, not against ``end``: a
+        symbol is refetched whenever the cache stops short of the last closed
+        session. The obvious-looking alternative - skip if the tail is within
+        a few days of ``end`` - is what this replaced, and it was wrong in a
+        way nothing reported. This is the only place that refreshes bars, so
+        a skipped run leaves the cache short until the next one, and a
+        tolerance of N days means the newest bar arrives up to N days late.
+        Strategies anchor "today" to that last bar (``bucket_dca.evaluate``),
+        so the tolerance did not delay the weekly rebalance - it *repeated*
+        it: with a 3-day window the cache sat on Monday's bar through
+        Wednesday and Thursday, each of those runs read "today is Monday",
+        and the week's buy was proposed three times. The cadence a strategy
+        runs on must come from the market's calendar, not from how often the
+        cache happens to be topped up.
+
+        A cutoff on a day the exchange did not trade (a weekend, a holiday, or
+        a Monday-evening KST run, where the last closed session in New York is
+        Sunday) costs one fetch attempt per symbol that returns nothing. That
+        is the price of not carrying a holiday calendar, and it is paid in
+        requests rather than in correctness.
         """
         if self.source is None:
             raise DataUnavailableError(
                 "HistoryLoader에 source가 설정되지 않아 갱신할 수 없습니다."
             )
 
+        cutoff = self.session_cutoff()
         added = {}
         for symbol in symbols:
             first, last = self.cache.coverage(symbol)
             fetch_start = as_date(start)
             if last is not None:
-                # Already covered up to `last` - and if it's recent enough,
-                # skip the round trip entirely.
-                if (as_date(end) - last).days <= self.staleness_days:
+                # Already covered through the last session the exchange has
+                # finished - there is nothing yet to fetch.
+                if last >= cutoff:
                     added[symbol] = 0
                     continue
                 fetch_start = last + timedelta(days=1)

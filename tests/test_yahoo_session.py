@@ -10,7 +10,7 @@ weekday and scored momentum on a partial bar.
 from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
-from src.data.yahoo import EXCHANGE_TZ, last_closed_session_date
+from src.data.sessions import EXCHANGE_TZ, last_closed_session_date
 
 KST = ZoneInfo("Asia/Seoul")
 
