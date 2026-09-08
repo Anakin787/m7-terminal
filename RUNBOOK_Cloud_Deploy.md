@@ -3,22 +3,47 @@
 PC를 켜두지 않아도 배치가 돌게 하는 절차. **데이터(Firestore)는 이미 GCP에 있고,
 이 문서는 남은 절반인 "컴퓨트와 트리거"를 옮기는 과정**이다.
 
-> ⚠️ **이 문서의 명령은 아직 실제 프로젝트에서 실행해 검증하지 않았다.**
-> 처음 따라갈 때 프로젝트 번호·서비스계정 이름·리전은 실제 값으로 확인하면서 진행하고,
-> 어긋난 부분은 이 문서를 고쳐 둘 것.
+> ✅ **여기 적힌 절차는 실제로 돌려서 확인했다** (최종 2026-09-08). `m7-daily`,
+> `m7-trade`, `m7-dashboard` 셋 다 이 문서대로 빌드·배포된 상태다. 어긋난 부분을
+> 발견하면 고쳐 둘 것 — 이 문서가 틀리면 급할 때 틀린다.
 
 ---
 
 ## TL;DR — 두 번째부터는 이것만
 
+**빌드는 자동, 배포는 손으로.** `main`에 push하면 Cloud Build가 이미지를 커밋 해시로
+태그해 굽고 **거기서 멈춘다**(`cloudbuild.yaml`). 배포는 그 이미지를 가리키게 하는
+별도의 명령이다.
+
 📁 **로컬 WSL · 리포 루트**
 
 ```bash
-cd /mnt/c/Users/seonb/orca/m7-terminal
-gcloud run jobs deploy m7-daily --source . --region asia-northeast3
+git push                                    # → Cloud Build가 :<커밋해시> 이미지를 굽는다
+gcloud builds list --region=global --limit=1   # SUCCESS 확인 (보통 1~2분)
 ```
 
-빌드·푸시·Job 갱신이 한 번에 끝난다. Docker Desktop을 켤 필요도 없다.
+☁️ **아무 셸이나** — 배포할 대상만 골라서 친다
+
+```bash
+export TAG=$(git rev-parse --short HEAD)    # 📁 리포 루트에서만. 아니면 해시를 직접 적는다
+
+gcloud run jobs update     m7-daily     --image=${IMAGE}:${TAG} --region=$REGION
+gcloud run jobs update     m7-trade     --image=${IMAGE}:${TAG} --region=$REGION
+gcloud run services update m7-dashboard --image=${IMAGE}:${TAG} --region=$REGION
+```
+
+**왜 한 번에 안 하나.** 이 저장소는 실주문을 낸다. 나쁜 커밋이 스스로 다음 예약
+실행까지 걸어 들어갈 수 있으면, 알아채고 멈출 시간이 `git push`와 그 실행 사이밖에
+없다. 미리 구워두는 것이 이 수동 단계를 싸게 만든다 — 배포가 빌드를 기다리는 일이
+아니라 **포인터 한 번 바꾸는 몇 초**가 된다.
+
+`update`는 인자·시크릿 볼륨·VPC 설정을 그대로 두고 이미지만 바꾼다. 그래서 이 한 줄에
+이미지 말고는 아무것도 적지 않아도 된다.
+
+> **설정만 바꿨다면 빌드도 배포도 필요 없다.** `config.yaml`은 시크릿이고 마운트가
+> `:latest`라 Cloud Run이 실행할 때마다 다시 읽는다 — `gcloud secrets versions add
+> m7-config --data-file=config.yaml` 한 줄이 배포 전부다(0-6 참고).
+
 **0장(최초 1회 셋팅)은 처음 한 번만** 하면 된다.
 
 ---
@@ -254,7 +279,46 @@ docker run --rm \
 docker run --rm m7-terminal ls /app/config.yaml /app/.env /app/bars.db
 ```
 
-### 1-2. 배포
+### 1-2. 배포 — 빌드(자동)와 배포(수동)는 나뉘어 있다
+
+`main`에 push하면 트리거 `m7-build-on-push`가 `cloudbuild.yaml`을 읽고 이미지를
+`:<커밋해시>`와 `:latest` 두 태그로 굽는다. **빌드가 성공했을 때만** 레지스트리에
+올라가므로 깨진 커밋은 저장소를 건드리지 않는다. 그리고 **거기서 멈춘다.**
+
+배포는 그 이미지를 가리키게 하는 별도의 명령이다. 대상이 셋이고, 고친 코드에 따라
+칠 것만 고른다:
+
+| 무엇을 고쳤나 | 배포할 대상 |
+|---|---|
+| `main.py` · 리포트 파이프라인 | `m7-daily` |
+| `trade.py` · 전략 · 리스크 게이트 | `m7-trade` (필요하면 `m7-reconcile`도) |
+| `src/dashboard/` | `m7-dashboard` (**Job이 아니라 Service**) |
+| `src/store/`, `src/toss/` 등 공용 | 해당하는 것 전부 |
+
+☁️ **아무 셸이나**
+
+```bash
+gcloud run jobs update     m7-daily     --image=${IMAGE}:${TAG} --region=$REGION
+gcloud run jobs update     m7-trade     --image=${IMAGE}:${TAG} --region=$REGION
+gcloud run services update m7-dashboard --image=${IMAGE}:${TAG} --region=$REGION
+```
+
+**`services update`와 `jobs update`를 헷갈리지 말 것.** 대시보드만 Service다.
+어느 쪽이든 인자·시크릿 볼륨·VPC 애노테이션은 그대로 두고 이미지만 바꾼다 — 그래서
+이 줄에 이미지 말고 아무것도 안 적어도 되고, 반대로 **다른 플래그를 같이 적으면 적지
+않은 설정이 날아갈 수 있다.**
+
+배포 뒤 정의가 멀쩡한지 한 번 보는 게 싸다. 특히 `command`가 비어 있어야 한다 —
+`--command`가 붙으면 `entrypoint.sh`를 건너뛰고 bars.db 동기화가 조용히 사라진다
+(2026-09-02에 `m7-trade`가 그래서 매일 죽고 있었다).
+
+```bash
+gcloud run jobs describe m7-trade --region=$REGION --format=json \
+  | python3 -c "import json,sys; c=json.load(sys.stdin)['spec']['template']['spec']['template']['spec']['containers'][0]; print(c.get('image')); print('command:', c.get('command')); print('args:', c.get('args'))"
+```
+
+<details>
+<summary>빌드와 배포를 한 번에 하고 싶다면 (최초 생성 때 쓴 방법)</summary>
 
 📁 **로컬 WSL · 리포 루트** — `--source .`가 현재 폴더를 업로드하므로 위치가 곧 배포 내용이다
 
@@ -262,8 +326,10 @@ docker run --rm m7-terminal ls /app/config.yaml /app/.env /app/bars.db
 gcloud run jobs deploy m7-daily --source . --region=$REGION
 ```
 
-Cloud Build가 빌드 → Artifact Registry 푸시 → Job 갱신까지 한 번에 한다.
-**Docker Desktop을 켤 필요가 없다** — 빌드가 GCP에서 일어난다.
+빌드 → 푸시 → Job 갱신까지 한 번에 한다. Job을 **처음 만들 때**는 이게 편하지만,
+평소 배포로 쓰면 위에서 말한 "알아채고 멈출 시간"이 사라진다. 그리고 커밋되지 않은
+로컬 변경까지 올라가므로 **배포된 것과 `git log`가 어긋난다.**
+</details>
 
 <details>
 <summary>로컬 이미지를 직접 올리고 싶다면 (3단계)</summary>
@@ -420,8 +486,20 @@ gcloud logging read \
   'resource.type="cloud_run_job" AND resource.labels.job_name="m7-daily"' \
   --limit=100 --format='value(textPayload)'
 
-# 롤백 — 이전 커밋 해시 태그로 되돌린다
-gcloud run jobs update m7-daily --image=${IMAGE}:<이전해시> --region=$REGION
+# 롤백 — 이전 커밋 해시 태그로 되돌린다. 빌드도 push도 필요 없다
+gcloud run jobs update     m7-daily     --image=${IMAGE}:<이전해시> --region=$REGION
+gcloud run services update m7-dashboard --image=${IMAGE}:<이전해시> --region=$REGION
+
+# 어떤 해시가 레지스트리에 있는지
+gcloud artifacts docker images list ${IMAGE} --include-tags \
+  --sort-by=~UPDATE_TIME --limit=10
+```
+
+대시보드(Service)는 리비전 이력이 따로 있어서 트래픽만 되돌려도 된다:
+
+```bash
+gcloud run revisions list --service=m7-dashboard --region=$REGION
+gcloud run services update-traffic m7-dashboard --region=$REGION --to-revisions=<리비전>=100
 ```
 
 ---
@@ -433,6 +511,8 @@ gcloud run jobs update m7-daily --image=${IMAGE}:<이전해시> --region=$REGION
 | 코드를 고쳤는데 클라우드는 옛날 동작 | `push`만 하고 `jobs update`를 안 함. 태그가 digest로 고정돼 있다 |
 | `$PROJECT`가 빈 값으로 들어가 실패 | 터미널을 새로 열고 "공통 변수" `export`를 다시 안 붙여넣음 |
 | 엉뚱한 내용이 배포됨 | 📁 명령을 리포 루트 밖에서 실행. `--source .`는 "지금 폴더"를 올린다 |
+| `m7-dashboard`에 `jobs update`가 안 먹음 | 대시보드만 **Service**다. `services update`를 쓴다 |
+| push했는데 이미지가 안 생김 | 빌드 실패. `gcloud builds list --region=global`로 상태부터 본다 |
 | `403 edge-blocked` | 토스 허용 IP. 클라우드 IP가 등록돼 있는지 확인 (0-7) |
 | 에러 없이 이상한 설정으로 매매 | `config.yaml` 마운트 누락. 이제는 `require_config_file`이 중단시킨다 |
 | 매 실행마다 Yahoo 재다운로드 | `M7_BAR_CACHE_GCS_URI` 미설정, 또는 `--command`로 entrypoint를 덮어씀 |
@@ -488,6 +568,13 @@ printf '%s' "$GOOGLE_AI_API_KEY" | gcloud secrets versions add GOOGLE_AI_API_KEY
 
 > ✅ **완료 (2026-09-01).** `m7-dashboard` 배포됨. 잠금 확인 - 인증 없이 403, 토큰으로 200.
 > 이미 빌드된 이미지를 쓰므로 `--source .` 대신 `--image`를 썼다.
+>
+> **이 403은 여기까지의 상태다.** 6-3에서 IAP를 앞에 세우고 나면 같은 요청이
+> **302**(구글 로그인으로 리다이렉트)로 바뀐다. 둘 다 "잠겨 있음"이고, 지금 확인하면
+> 302가 정답이다 — 6-3 5)번 참고.
+>
+> 이후 코드 변경을 반영할 때는 1-2의 `gcloud run services update --image` 한 줄이면
+> 된다. 여기 있는 긴 명령은 **처음 만들 때** 쓰는 것이다.
 
 ☁️ **아무 셸이나** (아래는 `--source .` 형태이므로 📁 로컬 리포 루트)
 
