@@ -868,8 +868,17 @@ async function loadAudit() {
     if (method) {
       const basis = document.createElement("div");
       basis.className = "text-[10px] text-on-surface-variant/50 mt-0.5";
-      basis.textContent = method.label;
-      basis.title = method.title;
+      // The dotted underline is what the header used to say in a sentence:
+      // that hovering here explains how exact this timestamp is. A tooltip
+      // needing a signpost elsewhere on the page is a tooltip nobody finds -
+      // and the affordance sits on the words, not the whole cell, so the
+      // help cursor appears where the explanation actually is.
+      const label = document.createElement("span");
+      label.className =
+        "underline decoration-dotted underline-offset-2 decoration-on-surface-variant/40 cursor-help";
+      label.textContent = method.label;
+      label.title = method.title;
+      basis.appendChild(label);
       whenCell.appendChild(basis);
     }
 
