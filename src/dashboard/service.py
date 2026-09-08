@@ -299,17 +299,17 @@ class DashboardService:
         ]
         return {"by": "bucket", "segments": segments}
 
-    def reports(self, limit=20):
-        return {"reports": self.store.recent_reports(limit)}
+    def reports(self, limit=20, offset=0):
+        return self.store.reports_page(limit=limit, offset=offset)
 
-    def audit(self, limit=50, category=None):
+    def audit(self, limit=50, category=None, offset=0):
         """The change log: settings edits and what the AI review did.
 
         Read straight through - no snapshot, no upstream call - so this page
         still answers "what changed" on a day the brokerage API is down,
         which is exactly a day someone might be asking.
         """
-        return {"entries": self.store.recent_audit(limit=limit, category=category)}
+        return self.store.audit_page(limit=limit, offset=offset, category=category)
 
     def trading_activity(self, limit=50):
         """What the engine decided, and what came out of it.

@@ -29,7 +29,13 @@ const ALLOCATION_COLORS = {
 
 const state = { view: "overview", range: "3M", allocBy: "market", history: null,
                 editingName: false, auditCategory: "", trading: null, health: null,
-                engineOpen: false };
+                engineOpen: false, auditPage: 0, reportsPage: 0 };
+
+//: Rows per page. A report lands every weekday, so ten is about a fortnight;
+//: audit rows are taller (each carries its own change lines) and arrive in
+//: bursts when settings are edited.
+const AUDIT_PAGE_SIZE = 15;
+const REPORTS_PAGE_SIZE = 10;
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -619,10 +625,96 @@ function makeNameEditable(cell, position) {
   cell.addEventListener("click", () => { if (!cell.querySelector("input")) edit(); });
 }
 
+/* ---------------------------------------------------------------- paging */
+
+/** Draw the pager under a table, or hide it when there is only one page.
+ *
+ * ``total`` may be null (the count query failed) or a floor rather than a
+ * count (``truncated`` - the audit scan hit its ceiling). Both are said out
+ * loud instead of being rounded into a confident page count: a pager that
+ * quietly stops at a page it will not name is the same silence this project
+ * keeps meeting elsewhere.
+ */
+function renderPager(id, page, size, meta, goto) {
+  const el = $(id);
+  if (!el) return;
+  el.innerHTML = "";
+
+  const shown = meta.shown;
+  const known = typeof meta.total === "number";
+  const pages = known ? Math.max(1, Math.ceil(meta.total / size)) : null;
+  const more = meta.truncated ? "+" : "";
+
+  // Nothing at all: the table's own empty-state line says it better, and a
+  // pager over no rows is furniture.
+  if (!page && !shown) {
+    el.hidden = true;
+    return;
+  }
+  // One page holds everything: keep the count, drop the two dead buttons.
+  const single = !page && known && meta.total <= size;
+
+  el.hidden = false;
+  el.className = "p-3 border-t border-outline-variant/50 flex items-center justify-between gap-3 flex-wrap";
+
+  // Past the end - reachable from a stale total, or from rows ageing out of
+  // the audit scan between two clicks. Say so and keep "이전" alive rather
+  // than computing a range like "51-50 / 47" out of the arithmetic.
+  const stranded = shown === 0;
+  const summary = document.createElement("span");
+  summary.className = "font-data-mono text-xs text-on-surface-variant/60";
+  if (stranded) {
+    summary.textContent = known
+      ? `이 페이지는 비어 있습니다 · 총 ${meta.total}${more}건`
+      : "이 페이지는 비어 있습니다";
+  } else {
+    const first = page * size + 1;
+    summary.textContent = known
+      ? `${first}–${first + shown - 1} / ${meta.total}${more}건`
+      : `${first}–${first + shown - 1}건`;
+  }
+  if (meta.truncated) {
+    summary.title = `최근 ${meta.total}건까지만 셉니다 — 그보다 오래된 기록은 이 표에 나오지 않습니다.`;
+  }
+  el.appendChild(summary);
+  if (single) return;
+
+  const nav = document.createElement("div");
+  nav.className = "flex items-center gap-2";
+
+  const step = (label, target, enabled) => {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = label;
+    button.disabled = !enabled;
+    button.className = "px-3 py-1.5 rounded text-xs font-semibold border transition-colors " +
+      (enabled
+        ? "border-outline-variant/40 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high"
+        : "border-outline-variant/20 text-on-surface-variant/25 cursor-not-allowed");
+    if (enabled) button.addEventListener("click", () => goto(target));
+    return button;
+  };
+
+  // With no total, "next" stays live: the only honest thing is to let the
+  // reader try and land on an empty page if there was nothing there.
+  const hasNext = !stranded && (known ? page + 1 < pages : shown === size);
+  nav.appendChild(step("‹ 이전", page - 1, page > 0));
+
+  const position = document.createElement("span");
+  position.className = "font-data-mono text-xs text-on-surface-variant px-1";
+  // No "n / m" while stranded - "3 / 2" is arithmetic, not a location.
+  position.textContent = known && !stranded ? `${page + 1} / ${pages}${more}` : `${page + 1}`;
+  nav.appendChild(position);
+
+  nav.appendChild(step("다음 ›", page + 1, hasNext));
+  el.appendChild(nav);
+}
+
 /* --------------------------------------------------------------- reports */
 
 async function loadReports() {
-  const data = await getJSON("/api/reports");
+  const offset = state.reportsPage * REPORTS_PAGE_SIZE;
+  const data = await getJSON(`/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${offset}`);
   const body = $("reports-body");
   body.innerHTML = "";
   const reports = data.reports || [];
@@ -671,9 +763,15 @@ async function loadReports() {
     });
   }
 
+  renderPager("reports-pager", state.reportsPage, REPORTS_PAGE_SIZE,
+    { total: data.total, shown: reports.length },
+    (page) => { state.reportsPage = page; loadReports().catch((err) => showError(String(err))); });
+
   // Surface the newest AI comment on the Overview card too. This runs even
   // when the list is empty above - the card is driven by the same fetch.
-  const latest = reports[0];
+  // Only from the first page: the card says "latest", and paging back
+  // through history must not quietly rewrite it to a report from March.
+  const latest = state.reportsPage === 0 ? reports[0] : null;
   if (latest && latest.ai_comment) {
     // Strip before truncating, or the character budget goes on markers the
     // reader cannot see - and a cut landing inside `**` leaves it dangling.
@@ -1101,16 +1199,27 @@ function auditChangeLine(change) {
 }
 
 async function loadAudit() {
-  const query = state.auditCategory ? `?category=${state.auditCategory}` : "";
-  const data = await getJSON(`/api/audit${query}`);
+  const params = new URLSearchParams({
+    limit: AUDIT_PAGE_SIZE,
+    offset: state.auditPage * AUDIT_PAGE_SIZE,
+  });
+  if (state.auditCategory) params.set("category", state.auditCategory);
+  const data = await getJSON(`/api/audit?${params}`);
   const body = $("audit-body");
   body.innerHTML = "";
   const entries = data.entries || [];
+
+  const auditPager = () => renderPager("audit-pager", state.auditPage, AUDIT_PAGE_SIZE,
+    { total: data.total, shown: entries.length, truncated: data.truncated },
+    (page) => { state.auditPage = page; loadAudit().catch((err) => showError(String(err))); });
 
   if (!entries.length) {
     body.innerHTML = `<tr><td colspan="5" class="px-4 py-8 text-center text-on-surface-variant">
       기록된 변경이 없습니다. 설정을 바꾼 뒤 <code class="font-data-mono text-primary">python main.py</code>
       또는 <code class="font-data-mono text-primary">python trade.py</code> 를 실행하면 감지됩니다.</td></tr>`;
+    // Still drawn: an empty page reached by paging past the end needs its
+    // "이전" button, or the reader is stranded.
+    auditPager();
     return;
   }
 
@@ -1192,6 +1301,8 @@ async function loadAudit() {
     row.append(whenCell, categoryCell, whatCell, whoCell, detectedCell);
     body.appendChild(row);
   });
+
+  auditPager();
 }
 
 function styleAuditTabs() {
@@ -1249,6 +1360,7 @@ function init() {
   document.querySelectorAll(".audit-tab").forEach((tab) => {
     tab.addEventListener("click", () => {
       state.auditCategory = tab.dataset.category || "";
+      state.auditPage = 0;   // a new filter is a new result set
       styleAuditTabs();
       loadAudit().catch((err) => showError(String(err)));
     });

@@ -73,16 +73,17 @@ def allocation(by: str = Query("market", pattern="^(market|currency|bucket)$")):
 
 
 @app.get("/api/reports")
-def reports(limit: int = Query(20, ge=1, le=100)):
-    return get_service().reports(limit)
+def reports(limit: int = Query(20, ge=1, le=100), offset: int = Query(0, ge=0)):
+    return get_service().reports(limit=limit, offset=offset)
 
 
 @app.get("/api/audit")
 def audit(
     limit: int = Query(50, ge=1, le=200),
     category: str | None = Query(None, pattern="^(baseline|universe|strategies|strategy_params|limits|veto|candidate|kill_switch)$"),
+    offset: int = Query(0, ge=0),
 ):
-    return get_service().audit(limit=limit, category=category)
+    return get_service().audit(limit=limit, category=category, offset=offset)
 
 
 @app.get("/api/trading/status")

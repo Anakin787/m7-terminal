@@ -95,7 +95,7 @@ def test_audit_entries_come_back_newest_first(store):
         ]
     )
 
-    assert [e["summary"] for e in store.recent_audit()] == ["new", "old"]
+    assert [e["summary"] for e in store.audit_page()["entries"]] == ["new", "old"]
 
 
 def test_audit_entries_can_be_filtered_by_category(store):
@@ -106,7 +106,7 @@ def test_audit_entries_can_be_filtered_by_category(store):
         ]
     )
 
-    assert [e["summary"] for e in store.recent_audit(category="veto")] == ["v"]
+    assert [e["summary"] for e in store.audit_page(category="veto")["entries"]] == ["v"]
 
 
 def test_the_fingerprint_is_absent_until_something_records_one(store):

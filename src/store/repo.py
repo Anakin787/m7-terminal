@@ -193,13 +193,41 @@ class Store:
         )
         return ts
 
-    def recent_reports(self, limit=20):
+    def reports_page(self, limit=20, offset=0):
+        """One page of reports, newest first, with the total behind it.
+
+        ``offset`` is pushed to Firestore, which bills the skipped documents
+        as reads - so page 10 costs ten pages' worth. Accepted here because
+        reports arrive once a day: a year is a dozen pages, and the honest
+        page numbers that offsets buy are worth more than the reads a cursor
+        would save. A collection that grew by the minute would need the
+        cursor instead.
+
+        The count is an aggregation query, not a scan; it does not read the
+        documents it counts.
+        """
+        collection = self.client.collection("reports")
         query = (
-            self.client.collection("reports")
-            .order_by("ts", direction=firestore.Query.DESCENDING)
+            collection.order_by("ts", direction=firestore.Query.DESCENDING)
+            .offset(offset)
             .limit(limit)
         )
-        return [{"page_id": doc.id, **doc.to_dict()} for doc in query.stream()]
+        rows = [{"page_id": doc.id, **doc.to_dict()} for doc in query.stream()]
+        return {"reports": rows, "total": self._count(collection), "offset": offset,
+                "limit": limit}
+
+    @staticmethod
+    def _count(collection):
+        """``len()`` for a Firestore collection, without reading it.
+
+        Falls back to None rather than raising: a pager with no total still
+        pages, and a count that fails must not take the table down with it.
+        """
+        try:
+            result = collection.count().get()
+            return int(result[0][0].value)
+        except Exception:  # noqa: BLE001 - see docstring
+            return None
 
     # ------------------------------------------------------------ audit log
 
@@ -219,8 +247,8 @@ class Store:
     #: How many ordered rows a filtered audit read scans before giving up.
     _AUDIT_SCAN = 500
 
-    def recent_audit(self, limit=50, category=None):
-        """Audit entries, newest first, optionally one category only.
+    def audit_page(self, limit=50, offset=0, category=None):
+        """One page of audit entries, newest first, optionally one category.
 
         Only the ordering is pushed to Firestore; the category is matched
         here. Combining ``where`` with an ``order_by`` on a different field
@@ -228,20 +256,36 @@ class Store:
         accepts such a query happily, so the failure would first appear in
         production. Every other range scan in this module filters in Python
         for the same reason.
+
+        Which is also why the paging is done here rather than with Firestore
+        ``offset``: an offset applied before the category filter would skip
+        rows of *other* categories and hand back the wrong page. So one
+        ordered scan, filtered, then sliced - and ``total`` comes free from
+        the same pass.
+
+        ``truncated`` says the scan hit its ceiling, so the total is a floor
+        rather than a count. Reported rather than hidden: a pager that
+        silently stops at page 20 of an unknown number is the kind of quiet
+        this project keeps paying for.
         """
         query = self.client.collection("audit_log").order_by(
             "detected_at", direction=firestore.Query.DESCENDING
         )
-        scan = limit if not category else max(limit, self._AUDIT_SCAN)
-        rows = []
+        scan = self._AUDIT_SCAN
+        matched, scanned = [], 0
         for doc in query.limit(scan).stream():
+            scanned += 1
             data = doc.to_dict() or {}
             if category and data.get("category") != category:
                 continue
-            rows.append({"id": doc.id, **data})
-            if len(rows) >= limit:
-                break
-        return rows
+            matched.append({"id": doc.id, **data})
+        return {
+            "entries": matched[offset : offset + limit],
+            "total": len(matched),
+            "truncated": scanned >= scan,
+            "offset": offset,
+            "limit": limit,
+        }
 
     def audit_fingerprint(self):
         """The audited settings as of the last run, or None on a first run.

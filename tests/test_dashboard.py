@@ -343,6 +343,64 @@ def test_audit_endpoint_returns_entries_newest_first(client, service):
     assert entries[0]["actor_kind"] == "ai"
 
 
+def test_audit_pages_are_cut_after_the_category_filter_not_before(client, service):
+    """The trap this endpoint could easily fall into.
+
+    The category is matched in Python (a `where` beside an `order_by` on
+    another field needs a per-deployment composite index), so a Firestore
+    `offset` would skip rows of *other* categories and hand back a page with
+    the wrong rows on it. Interleave the categories so an offset applied too
+    early cannot accidentally land on the right answer.
+    """
+    service.store.save_audit_entries(
+        [
+            {"detected_at": f"2026-08-{day:02d}T09:00:00",
+             "category": "veto" if day % 2 else "limits",
+             "summary": f"e{day}"}
+            for day in range(1, 11)
+        ]
+    )
+
+    page = client.get("/api/audit?category=veto&limit=2&offset=0").json()
+    assert [e["summary"] for e in page["entries"]] == ["e9", "e7"]
+    assert page["total"] == 5
+
+    page = client.get("/api/audit?category=veto&limit=2&offset=2").json()
+    assert [e["summary"] for e in page["entries"]] == ["e5", "e3"]
+    assert page["total"] == 5
+
+    # Last page is short, and paging past the end is empty rather than an error.
+    assert [e["summary"] for e in
+            client.get("/api/audit?category=veto&limit=2&offset=4").json()["entries"]] == ["e1"]
+    assert client.get("/api/audit?category=veto&limit=2&offset=6").json()["entries"] == []
+
+
+def test_reports_page_carries_the_total_behind_it(client, service):
+    for day in range(1, 6):
+        service.store.save_report(f"page-{day}", title=f"r{day}",
+                                  ts=f"2026-08-{day:02d}T10:00:00")
+
+    first = client.get("/api/reports?limit=2&offset=0").json()
+    assert [r["title"] for r in first["reports"]] == ["r5", "r4"]
+    assert first["total"] == 5
+
+    second = client.get("/api/reports?limit=2&offset=2").json()
+    assert [r["title"] for r in second["reports"]] == ["r3", "r2"]
+    assert second["total"] == 5
+
+
+def test_an_empty_audit_page_still_reports_a_total(client, service):
+    """So the pager can draw a "이전" button and let the reader back out."""
+    service.store.save_audit_entries(
+        [{"detected_at": "2026-08-26T09:00:00", "category": "limits", "summary": "one"}]
+    )
+
+    page = client.get("/api/audit?limit=25&offset=25").json()
+
+    assert page["entries"] == []
+    assert page["total"] == 1
+
+
 def _signal(**overrides):
     from src.strategy.base import ORDER_MARKET, SIDE_BUY, Signal
 
