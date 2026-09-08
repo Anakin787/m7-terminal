@@ -412,9 +412,13 @@
       <!-- ============ AUDIT LOG ============ -->
       <section data-view="audit" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
         <div class="p-4 border-b border-outline-variant/50 flex items-center justify-between gap-4 flex-wrap">
-          <div>
+          <!-- No width cap on the description. A 48rem measure is a reading
+               aid for a paragraph; this is one sentence, and capping it just
+               bought a second line on a screen with room to spare. It still
+               wraps on a narrow window, which is where wrapping belongs. -->
+          <div class="min-w-0">
             <h3 class="text-headline-md font-bold">Audit Log</h3>
-            <p class="text-on-surface-variant/60 text-sm mt-0.5 max-w-3xl">
+            <p class="text-on-surface-variant/60 text-sm mt-0.5">
               유니버스 · 전략 · 파라미터 · 리스크 한도 변경과 AI 검토 결과입니다.
               <strong>변경 시각</strong>은 설정 파일 기준, <strong>감지 시각</strong>은
               실행이 그걸 발견한 때입니다.
