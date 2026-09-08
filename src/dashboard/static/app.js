@@ -28,7 +28,8 @@ const ALLOCATION_COLORS = {
 };
 
 const state = { view: "overview", range: "3M", allocBy: "market", history: null,
-                editingName: false, auditCategory: "", trading: null, health: null };
+                editingName: false, auditCategory: "", trading: null, health: null,
+                engineOpen: false };
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -739,6 +740,36 @@ async function loadTrading() {
   renderTrading();
 }
 
+/** Open or close the Engine Control detail.
+ *
+ * Collapsed is the resting state - three tiles and a stop button are a lot
+ * of page for a panel you consult when something looks wrong, and the stop
+ * itself lives in the header on every page.
+ *
+ * "Something looks wrong" is exactly when it must not be collapsed, though.
+ * Anything other than a healthy armed engine - halted, disabled, or a status
+ * this page could not read at all - opens the panel and keeps it open,
+ * because the reason is one of the three tiles inside and a reader who never
+ * clicks would otherwise see empty tables and no explanation for them.
+ */
+function renderEngineDisclosure(data, halted) {
+  const toggle = $("engine-toggle");
+  const detail = $("engine-detail");
+  if (!toggle || !detail) return;
+
+  const abnormal = data === null || halted || !data.engine_enabled;
+  const open = abnormal || state.engineOpen;
+
+  detail.hidden = !open;
+  toggle.setAttribute("aria-expanded", String(open));
+  const chevron = $("engine-chevron");
+  if (chevron) chevron.style.transform = open ? "rotate(90deg)" : "";
+  // A forced-open panel still looks clickable, so say why it will not close.
+  toggle.title = abnormal && !state.engineOpen
+    ? "엔진이 정상 상태가 아니라 접히지 않습니다"
+    : "";
+}
+
 function renderTrading() {
   const data = state.trading;
   const halted = !!data?.halted;
@@ -762,6 +793,7 @@ function renderTrading() {
   const stateChip = $("engine-state");
   stateChip.textContent = data === null ? "UNKNOWN"
     : halted ? "HALTED" : data.engine_enabled ? "ARMED · PAPER" : "DISABLED";
+  renderEngineDisclosure(data, halted);
   stateChip.className = "font-label-caps text-label-caps px-2 py-1 rounded border " + (
     data === null ? "border-outline-variant/40 text-on-surface-variant/50"
       : halted ? "border-tertiary-container/50 text-tertiary-fixed-dim"
@@ -1183,6 +1215,11 @@ function styleAllocTabs() {
 function init() {
   document.querySelectorAll(".nav-item").forEach((item) => {
     item.addEventListener("click", (event) => { event.preventDefault(); setView(item.dataset.view); });
+  });
+
+  $("engine-toggle")?.addEventListener("click", () => {
+    state.engineOpen = !state.engineOpen;
+    renderTrading();
   });
   document.querySelectorAll(".range-btn").forEach((button) => {
     button.addEventListener("click", () => {

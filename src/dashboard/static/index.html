@@ -288,11 +288,21 @@
       <section data-view="trading" hidden class="space-y-gutter">
 
         <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
-          <div class="p-4 border-b border-outline-variant/50 flex items-center justify-between gap-4">
-            <h3 class="text-headline-md font-bold">Engine Control</h3>
+          <!-- Collapsed by default: this is a panel you read when something
+               is wrong, and the header's PAUSE button is the stop you reach
+               for when it is. The state chip stays out here, so the summary
+               is never behind the toggle - and renderTrading() forces the
+               panel open whenever that chip is not ARMED. -->
+          <button type="button" id="engine-toggle" aria-expanded="false" aria-controls="engine-detail"
+            class="w-full p-4 flex items-center justify-between gap-4 text-left hover:bg-surface-container-high transition-colors">
+            <span class="flex items-center gap-2">
+              <span id="engine-chevron" class="material-symbols-outlined text-[20px] text-on-surface-variant transition-transform">chevron_right</span>
+              <span class="text-headline-md font-bold">Engine Control</span>
+            </span>
             <span id="engine-state" class="font-label-caps text-label-caps px-2 py-1 rounded border border-outline-variant/40 text-on-surface-variant">—</span>
-          </div>
+          </button>
 
+          <div id="engine-detail" hidden class="border-t border-outline-variant/50">
           <!-- Three separate facts, shown separately: which one is stopping
                the engine decides what you would change to start it. -->
           <div class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-outline-variant/30">
@@ -325,6 +335,7 @@
             킬 스위치는 <code class="font-data-mono">KILL_SWITCH</code> 파일 하나입니다. 리스크 게이트가 가장 먼저,
             어떤 예외도 없이 확인합니다. 이 화면이 닿지 않을 때는 파일을 직접 만들어도 똑같이 멈춥니다.
           </p>
+          </div>
         </div>
 
         <!-- Signals and orders are two tables, not one. A signal the gate
@@ -479,6 +490,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=9"></script>
+<script src="/static/app.js?v=10"></script>
 </body>
 </html>
