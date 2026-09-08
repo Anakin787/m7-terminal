@@ -311,6 +311,21 @@ class DashboardService:
         """
         return {"entries": self.store.recent_audit(limit=limit, category=category)}
 
+    def trading_activity(self, limit=50):
+        """What the engine decided, and what came out of it.
+
+        Two lists rather than one joined view. A signal the risk gate refused
+        produces no order at all, and that absence is the most useful thing
+        the pair can say - joining them would either drop those rows or
+        invent an empty order to hang them on. Read straight from the store,
+        like ``audit``: this has to answer "did it trade?" on a day the
+        brokerage API is the thing that is broken.
+        """
+        return {
+            "signals": self.store.recent_signals(limit=limit),
+            "orders": self.store.recent_orders(limit=limit),
+        }
+
     def health(self):
         snapshot, error = self.snapshot()
         freshness = self.snapshot_freshness()

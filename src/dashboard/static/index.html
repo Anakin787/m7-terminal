@@ -327,12 +327,55 @@
           </p>
         </div>
 
-        <div class="bg-surface-container rounded-lg border border-outline-variant/50 p-6">
-          <h3 class="text-headline-md font-bold mb-2">주문 · 신호</h3>
-          <p class="text-on-surface-variant text-body-md">
-            신호·주문 이력 화면은 아직 없습니다. 현재는 <code class="font-data-mono text-primary">python trade.py</code>
-            실행 로그와 감사 로그가 유일한 기록입니다.
-          </p>
+        <!-- Signals and orders are two tables, not one. A signal the gate
+             refused never becomes an order, and that gap is the point. -->
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
+          <div class="p-4 border-b border-outline-variant/50">
+            <h3 class="text-headline-md font-bold">신호</h3>
+            <p class="text-on-surface-variant/60 text-sm mt-0.5">
+              전략이 낸 것 전부입니다 — 리스크 게이트가 거부한 것도 그 사유와 함께 남습니다.
+            </p>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
+                  <th class="text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">판정</th>
+                  <th class="text-left px-4 py-2 font-bold">사유</th>
+                </tr>
+              </thead>
+              <tbody id="signals-body"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
+          <div class="p-4 border-b border-outline-variant/50">
+            <h3 class="text-headline-md font-bold">주문</h3>
+            <p class="text-on-surface-variant/60 text-sm mt-0.5">
+              게이트를 통과해 발주 경로까지 간 것입니다. PAPER에서는
+              <code class="font-data-mono text-xs">simulated</code>로 기록되고 전송되지 않습니다.
+            </p>
+          </div>
+          <div class="overflow-x-auto">
+            <table class="w-full text-sm">
+              <thead>
+                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
+                  <th class="text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
+                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">상태</th>
+                  <th class="text-left px-4 py-2 font-bold">주문 ID</th>
+                </tr>
+              </thead>
+              <tbody id="orders-body"></tbody>
+            </table>
+          </div>
         </div>
       </section>
 
@@ -436,6 +479,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=8"></script>
+<script src="/static/app.js?v=9"></script>
 </body>
 </html>

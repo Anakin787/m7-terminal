@@ -343,6 +343,72 @@ def test_audit_endpoint_returns_entries_newest_first(client, service):
     assert entries[0]["actor_kind"] == "ai"
 
 
+def _signal(**overrides):
+    from src.strategy.base import ORDER_MARKET, SIDE_BUY, Signal
+
+    # An amount order, which is what bucket-dca buys with - no quantity and
+    # no limit price until it fills.
+    base = dict(strategy="bucket-dca", symbol="QQQ", side=SIDE_BUY,
+                order_type=ORDER_MARKET, reason="WEEKLY 배분 — CORE 버킷",
+                amount=Decimal("484.31"), currency="USD")
+    base.update(overrides)
+    return Signal(**base)
+
+
+def test_activity_endpoint_returns_signals_and_orders_separately(client, service):
+    """Rejected signals have no order, and the endpoint must still show them.
+
+    Joining the two would have to either drop this row or invent an order to
+    hang it on - and "the gate refused everything" is precisely what someone
+    opens this page to find out.
+    """
+    from src.execution.risk import Rejection, RiskDecision
+
+    service.store.save_decision(RiskDecision(signal=_signal(), intent=object()))
+    service.store.save_decision(
+        RiskDecision(signal=_signal(symbol="SHY"),
+                     rejection=Rejection("order-hours-closed", "정규장이 아닙니다")),
+    )
+
+    data = client.get("/api/trading/activity").json()
+
+    outcomes = {row["symbol"]: row["outcome"] for row in data["signals"]}
+    assert outcomes == {"QQQ": "accepted", "SHY": "rejected"}
+    rejected = next(r for r in data["signals"] if r["symbol"] == "SHY")
+    assert rejected["reject_rule"] == "order-hours-closed"
+    assert rejected["reject_detail"] == "정규장이 아닙니다"
+    assert data["orders"] == []
+
+
+def test_activity_endpoint_reports_the_mode_each_order_ran_in(client, service):
+    """Design section 7 calls PAPER/LIVE confusion a live risk.
+
+    A table of orders is where it would bite, so the mode travels with every
+    row rather than being inferred from the page's engine badge.
+    """
+    from src.execution.risk import OrderIntent
+
+    intent = OrderIntent(
+        signal=_signal(), symbol="QQQ", side="BUY", order_type="MARKET",
+        currency="USD", amount=Decimal("484.31"), notional_krw=Decimal("650000"),
+    )
+    service.store.save_order(intent.with_client_order_id("bucket_dca-QQQ-2026-09-09-1"),
+                             status="simulated", mode="paper")
+
+    orders = client.get("/api/trading/activity").json()["orders"]
+
+    assert len(orders) == 1
+    assert orders[0]["client_order_id"] == "bucket_dca-QQQ-2026-09-09-1"
+    assert (orders[0]["status"], orders[0]["mode"]) == ("simulated", "paper")
+    # Amount orders carry no quantity until they fill; the column must not
+    # silently become blank for every buy this strategy makes.
+    assert orders[0]["amount"] == "484.31"
+
+
+def test_activity_endpoint_is_empty_before_anything_has_run(client):
+    assert client.get("/api/trading/activity").json() == {"signals": [], "orders": []}
+
+
 def test_audit_endpoint_filters_by_category(client, service):
     service.store.save_audit_entries(
         [

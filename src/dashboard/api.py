@@ -90,6 +90,11 @@ def trading_status():
     return get_service().trading_status()
 
 
+@app.get("/api/trading/activity")
+def trading_activity(limit: int = Query(50, ge=1, le=200)):
+    return get_service().trading_activity(limit=limit)
+
+
 @app.post("/api/trading/kill-switch")
 def set_kill_switch(
     active: bool = Body(embed=True),

@@ -147,6 +147,12 @@ function setView(requested) {
   if (view === "holdings") loadHoldings();
   if (view === "reports") loadReports();
   if (view === "audit") loadAudit().catch((err) => showError(String(err)));
+  // Loaded on entry, and deliberately not joined to the 15s refresh that
+  // `loadTrading` rides. The engine runs once a day, so polling 100 Firestore
+  // documents every fifteen seconds would spend a day's free-tier read quota
+  // on an idle hour to show the same rows back. Leaving and returning to the
+  // page reloads it.
+  if (view === "trading") loadTradingActivity().catch((err) => showError(String(err)));
   if (view === "settings") loadSettings();
 }
 
@@ -789,6 +795,208 @@ function renderTrading() {
 // Engaging needs no confirmation - stopping is always the safe direction, and
 // a stop control that argues with you is a broken stop control. Releasing
 // does, because that one starts the engine again.
+/* --------------------------------------------------- signals and orders */
+
+const SIDE_LABEL = { BUY: "매수", SELL: "매도" };
+
+//: Outcome of the risk gate, which is the only thing that decides whether a
+//: signal becomes an order. "accepted" is not "filled" - it is "allowed".
+const SIGNAL_OUTCOME = {
+  accepted: { label: "승인", tone: "text-secondary-fixed-dim" },
+  rejected: { label: "거부", tone: "text-tertiary-fixed-dim" },
+};
+
+const ORDER_STATUS = {
+  pending: { label: "발주 전", tone: "text-on-surface-variant" },
+  simulated: { label: "모의", tone: "text-primary" },
+  submitted: { label: "전송됨", tone: "text-warning" },
+  partially_filled: { label: "일부 체결", tone: "text-warning" },
+  filled: { label: "체결", tone: "text-secondary-fixed-dim" },
+  failed: { label: "실패", tone: "text-tertiary-fixed-dim" },
+  rejected: { label: "거부", tone: "text-tertiary-fixed-dim" },
+  canceled: { label: "취소", tone: "text-on-surface-variant/50" },
+  unknown: { label: "확인 필요", tone: "text-warning" },
+};
+
+/** "3주" or "$484.31" - whichever the order was actually expressed in.
+ *
+ * A bucket-dca buy is an *amount* order and carries no quantity until it
+ * fills, so showing a quantity column alone would leave every buy blank.
+ */
+function orderSize(row) {
+  const qty = Number(row.quantity);
+  if (row.quantity && qty > 0) return qty.toLocaleString("en-US") + "주";
+  const amount = Number(row.amount);
+  if (row.amount && amount > 0) {
+    return row.currency === "KRW" ? fmtInt(amount) + " KRW" : "$" + amount.toFixed(2);
+  }
+  return "—";
+}
+
+function sideChip(side) {
+  const chip = document.createElement("span");
+  chip.className = "font-data-mono text-xs font-bold " +
+    (side === "SELL" ? "text-tertiary-fixed-dim" : "text-secondary-fixed-dim");
+  chip.textContent = SIDE_LABEL[side] || side || "—";
+  return chip;
+}
+
+function cell(className, text) {
+  const td = document.createElement("td");
+  td.className = className;
+  if (text !== undefined) td.textContent = text;
+  return td;
+}
+
+/** One row per table, and an explicit sentence when there are none.
+ *
+ * The empty state is not decoration. This project keeps meeting the same
+ * failure - a silence that looks exactly like a quiet day - so an empty
+ * table has to say which of the two it is and when a row would appear.
+ */
+function emptyRow(colspan, message) {
+  const row = document.createElement("tr");
+  const td = cell("px-4 py-8 text-center text-on-surface-variant/70 text-sm");
+  td.colSpan = colspan;
+  td.textContent = message;
+  row.appendChild(td);
+  return row;
+}
+
+function signalRow(entry) {
+  const row = document.createElement("tr");
+  row.className = "border-b border-outline-variant/20 hover:bg-surface-container-high transition-colors align-top";
+
+  row.appendChild(cell("px-4 py-3 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
+    fmtStamp(entry.ts)));
+
+  const symbolCell = cell("px-4 py-3 whitespace-nowrap");
+  const symbol = document.createElement("div");
+  symbol.className = "font-data-mono text-sm font-bold text-on-surface";
+  symbol.textContent = entry.symbol || "—";
+  const strategy = document.createElement("div");
+  strategy.className = "text-[10px] text-on-surface-variant/50 mt-0.5";
+  strategy.textContent = entry.strategy || "";
+  symbolCell.append(symbol, strategy);
+  row.appendChild(symbolCell);
+
+  const sideCell = cell("px-4 py-3 whitespace-nowrap");
+  sideCell.appendChild(sideChip(entry.side));
+  const type = document.createElement("div");
+  type.className = "text-[10px] text-on-surface-variant/50 mt-0.5";
+  type.textContent = (entry.order_type || "").toLowerCase();
+  sideCell.appendChild(type);
+  row.appendChild(sideCell);
+
+  row.appendChild(cell("px-4 py-3 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
+    orderSize(entry)));
+
+  const outcome = SIGNAL_OUTCOME[entry.outcome] || { label: entry.outcome || "—", tone: "text-on-surface-variant" };
+  const verdictCell = cell("px-4 py-3 whitespace-nowrap");
+  const verdict = document.createElement("div");
+  verdict.className = "text-xs font-bold " + outcome.tone;
+  verdict.textContent = outcome.label;
+  verdictCell.appendChild(verdict);
+  if (entry.reject_rule) {
+    const rule = document.createElement("div");
+    rule.className = "font-data-mono text-[10px] text-on-surface-variant/50 mt-0.5";
+    rule.textContent = entry.reject_rule;
+    verdictCell.appendChild(rule);
+  }
+  row.appendChild(verdictCell);
+
+  // The gate's detail replaces the strategy's reason when there is one: on a
+  // rejected signal, why it was stopped outranks why it was proposed.
+  row.appendChild(cell("px-4 py-3 text-xs text-on-surface-variant max-w-xl",
+    entry.reject_detail || entry.reason || "—"));
+  return row;
+}
+
+function orderRow(entry) {
+  const row = document.createElement("tr");
+  row.className = "border-b border-outline-variant/20 hover:bg-surface-container-high transition-colors align-top";
+
+  row.appendChild(cell("px-4 py-3 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
+    fmtStamp(entry.ts)));
+
+  const symbolCell = cell("px-4 py-3 whitespace-nowrap");
+  const symbol = document.createElement("div");
+  symbol.className = "font-data-mono text-sm font-bold text-on-surface";
+  symbol.textContent = entry.symbol || "—";
+  const strategy = document.createElement("div");
+  strategy.className = "text-[10px] text-on-surface-variant/50 mt-0.5";
+  strategy.textContent = entry.strategy || "";
+  symbolCell.append(symbol, strategy);
+  row.appendChild(symbolCell);
+
+  const sideCell = cell("px-4 py-3 whitespace-nowrap");
+  sideCell.appendChild(sideChip(entry.side));
+  row.appendChild(sideCell);
+
+  row.appendChild(cell("px-4 py-3 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
+    orderSize(entry)));
+
+  const status = ORDER_STATUS[entry.status] || { label: entry.status || "—", tone: "text-on-surface-variant" };
+  const statusCell = cell("px-4 py-3 whitespace-nowrap");
+  const label = document.createElement("div");
+  label.className = "text-xs font-bold " + status.tone;
+  label.textContent = status.label;
+  statusCell.appendChild(label);
+  // The mode is on every row on purpose: design section 7 lists PAPER/LIVE
+  // confusion as a live risk, and a table of orders is exactly where it
+  // would bite.
+  const mode = document.createElement("div");
+  mode.className = "font-data-mono text-[10px] mt-0.5 " +
+    (entry.mode === "live" ? "text-tertiary-fixed-dim font-bold" : "text-on-surface-variant/50");
+  mode.textContent = (entry.mode || "").toUpperCase();
+  statusCell.appendChild(mode);
+  row.appendChild(statusCell);
+
+  const idCell = cell("px-4 py-3 max-w-xs");
+  const clientId = document.createElement("div");
+  clientId.className = "font-data-mono text-[10px] text-on-surface-variant/60 break-all";
+  clientId.textContent = entry.client_order_id || "—";
+  idCell.appendChild(clientId);
+  if (entry.error_code) {
+    const error = document.createElement("div");
+    error.className = "font-data-mono text-[10px] text-tertiary-fixed-dim mt-0.5";
+    error.textContent = entry.error_code;
+    idCell.appendChild(error);
+  }
+  row.appendChild(idCell);
+  return row;
+}
+
+async function loadTradingActivity() {
+  const signalsBody = $("signals-body");
+  const ordersBody = $("orders-body");
+  if (!signalsBody || !ordersBody) return;
+
+  let data;
+  try {
+    data = await getJSON("/api/trading/activity");
+  } catch (err) {
+    signalsBody.innerHTML = "";
+    ordersBody.innerHTML = "";
+    signalsBody.appendChild(emptyRow(6, `신호를 불러오지 못했습니다: ${err}`));
+    ordersBody.appendChild(emptyRow(6, `주문을 불러오지 못했습니다: ${err}`));
+    return;
+  }
+
+  signalsBody.innerHTML = "";
+  const signals = data.signals || [];
+  if (signals.length) signals.forEach((entry) => signalsBody.appendChild(signalRow(entry)));
+  else signalsBody.appendChild(emptyRow(6,
+    "아직 신호가 없습니다. 리밸런스는 주 1회이고, 그 세션의 봉을 읽는 실행에서 처음 생깁니다."));
+
+  ordersBody.innerHTML = "";
+  const orders = data.orders || [];
+  if (orders.length) orders.forEach((entry) => ordersBody.appendChild(orderRow(entry)));
+  else ordersBody.appendChild(emptyRow(6, signals.length
+    ? "신호는 있는데 주문이 없습니다 — 위 표의 판정을 보세요. 게이트가 전부 거부했다는 뜻입니다."
+    : "아직 주문이 없습니다. 신호가 게이트를 통과하면 여기에 남습니다."));
+}
+
 async function toggleKillSwitch(reason) {
   const halted = !!state.trading?.halted;
   if (halted && !window.confirm("킬 스위치를 해제하고 자동매매 발주를 재개합니다. 계속할까요?")) return;
