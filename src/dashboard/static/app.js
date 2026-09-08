@@ -61,6 +61,33 @@ function toneClass(value) {
   return value > 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim";
 }
 
+/** Markdown the AI wrote, read as the prose it is.
+ *
+ * Gemini answers in Markdown and Notion renders it, so the stored comment
+ * keeps its markers - that copy is the one being delivered. Here they are
+ * only noise: these two places show a flattened excerpt, so `**` never
+ * becomes bold, it just spends characters and reads as typing debris.
+ *
+ * Stripped rather than rendered, deliberately. A one-line card and a
+ * two-line clamp have nowhere to put a heading or a nested list, and
+ * pulling in a Markdown renderer to throw its output away is a lot of
+ * machinery for a preview. Emphasis with a single `*` is left alone: it
+ * does not appear in these reports, and the rule that would catch it also
+ * catches arithmetic.
+ */
+function plainText(value) {
+  return (value || "")
+    .replace(/```[\s\S]*?```/g, " ")                  // fenced code
+    .replace(/^\s*(?:-{3,}|\*{3,}|_{3,})\s*$/gm, " ") // horizontal rules
+    .replace(/^\s*#{1,6}\s+/gm, "")                   // headings
+    .replace(/^\s*[*+-]\s+/gm, "· ")                  // bullets, kept as a mark
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, "$1")          // links
+    .replace(/(\*\*|__)([\s\S]*?)\1/g, "$2")          // bold
+    .replace(/`([^`]*)`/g, "$1")                      // inline code
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 async function getJSON(url) {
   const response = await fetch(url);
   if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
@@ -613,7 +640,7 @@ async function loadReports() {
       commentCell.className = "px-4 py-3 text-sm text-on-surface-variant";
       const comment = document.createElement("p");
       comment.className = "line-clamp-2 max-w-2xl";
-      comment.textContent = (report.ai_comment || "").slice(0, 220);
+      comment.textContent = plainText(report.ai_comment).slice(0, 220);
       commentCell.appendChild(comment);
 
       const linkCell = document.createElement("td");
@@ -641,7 +668,11 @@ async function loadReports() {
   // when the list is empty above - the card is driven by the same fetch.
   const latest = reports[0];
   if (latest && latest.ai_comment) {
-    $("ai-text").textContent = latest.ai_comment.replace(/\s+/g, " ").slice(0, 260) + "…";
+    // Strip before truncating, or the character budget goes on markers the
+    // reader cannot see - and a cut landing inside `**` leaves it dangling.
+    const insight = plainText(latest.ai_comment);
+    $("ai-text").textContent =
+      insight.length > 260 ? insight.slice(0, 260) + "…" : insight;
     $("ai-ts").textContent = latest.ts;
     if (latest.url) $("ai-link").href = latest.url; else $("ai-link").hidden = true;
     $("ai-card").hidden = false;
