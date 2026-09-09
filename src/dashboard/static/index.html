@@ -65,6 +65,21 @@
   .animate-spin-slow { animation: spin 3s linear infinite; }
   @keyframes spin { to { transform: rotate(360deg); } }
   [hidden] { display: none !important; }
+  /* Scrollbars in the app's palette. The browser default is a light bar, which
+     on these surfaces reads as a strip of daylight cut into the card - loudest
+     part of the screen, over the least important thing on it. Chrome 121+ and
+     Firefox take the standard properties; older WebKit takes the block below. */
+  * { scrollbar-width: thin; scrollbar-color: #434655 transparent; }
+  ::-webkit-scrollbar { width: 10px; height: 10px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb {
+    background-color: #434655; border-radius: 9999px;
+    /* Padding drawn as a transparent border, so the thumb sits off the edge
+       instead of butting against the card border. */
+    border: 2px solid transparent; background-clip: content-box;
+  }
+  ::-webkit-scrollbar-thumb:hover { background-color: #5b5f72; }
+  ::-webkit-scrollbar-corner { background: transparent; }
 </style>
 </head>
 <body class="bg-background text-on-surface font-body-md text-body-md antialiased overflow-hidden flex h-screen w-full">
@@ -391,27 +406,40 @@
       </section>
 
       <!-- ============ REPORTS ============ -->
-      <section data-view="reports" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
-        <div class="p-4 border-b border-outline-variant/50"><h3 class="text-headline-md font-bold">Notion Reports</h3></div>
-        <div class="overflow-x-auto">
+      <!-- Fixed to the viewport, not merely capped by it, and the same below on
+           the Audit Log: with a max-height the card grew and shrank with the row
+           count, so a filter that matched three rows left the pager floating in
+           the middle of the screen. A table is easier to read when its frame
+           holds still, and empty space inside the card costs nothing.
+           7rem is the top bar (4rem) plus the main padding (1.5rem, twice). -->
+      <section data-view="reports" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-[calc(100vh-7rem)] min-h-[24rem]">
+        <div class="p-4 border-b border-outline-variant/50 shrink-0"><h3 class="text-headline-md font-bold">Notion Reports</h3></div>
+        <div id="reports-scroll" class="overflow-auto min-h-0 flex-1">
           <table class="w-full text-sm">
             <thead>
-              <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
-                <th class="text-left px-4 py-2 font-bold whitespace-nowrap">생성 시각</th>
-                <th class="text-left px-4 py-2 font-bold">리포트</th>
-                <th class="text-left px-4 py-2 font-bold">AI 코멘트</th>
-                <th class="text-right px-4 py-2 font-bold whitespace-nowrap">링크</th>
+              <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider">
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">생성 시각</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold">리포트</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold">AI 코멘트</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-right px-4 py-2 font-bold whitespace-nowrap">링크</th>
               </tr>
             </thead>
             <tbody id="reports-body"></tbody>
           </table>
         </div>
-        <div id="reports-pager" hidden class="p-3 border-t border-outline-variant/50"></div>
+        <div id="reports-pager" hidden class="p-3 border-t border-outline-variant/50 shrink-0"></div>
       </section>
 
       <!-- ============ AUDIT LOG ============ -->
-      <section data-view="audit" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
-        <div class="p-4 border-b border-outline-variant/50 flex items-center justify-between gap-4 flex-wrap">
+      <!-- The card owns the height, not the rows. Audit entries carry their own
+           change lines, so a page of them is tall enough to push the pager off
+           the bottom of the screen - which put the control for the table below
+           the fold of the page holding it. Holding the card to the viewport and
+           scrolling the rows inside keeps the filters and the pager in view at
+           whatever height the rows happen to be. min-h: on a short window the
+           page may scroll rather than squeeze the card down to nothing. -->
+      <section data-view="audit" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-[calc(100vh-7rem)] min-h-[24rem]">
+        <div class="p-4 border-b border-outline-variant/50 flex items-center justify-between gap-4 flex-wrap shrink-0">
           <!-- No width cap on the description. A 48rem measure is a reading
                aid for a paragraph; this is one sentence, and capping it just
                bought a second line on a screen with room to spare. It still
@@ -434,21 +462,24 @@
             <button class="audit-tab" data-category="kill_switch">킬 스위치</button>
           </div>
         </div>
-        <div class="overflow-x-auto">
+        <div id="audit-scroll" class="overflow-auto min-h-0 flex-1">
           <table class="w-full text-sm">
+            <!-- Sticky headers: the columns have to stay named while the rows
+                 move under them. The border and background live on the cells,
+                 not the row, because a sticky <tr> keeps neither. -->
             <thead>
-              <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
-                <th class="text-left px-4 py-2 font-bold whitespace-nowrap">변경 시각</th>
-                <th class="text-left px-4 py-2 font-bold whitespace-nowrap">분류</th>
-                <th class="text-left px-4 py-2 font-bold">내용</th>
-                <th class="text-left px-4 py-2 font-bold whitespace-nowrap">변경자 · 출처</th>
-                <th class="text-right px-4 py-2 font-bold whitespace-nowrap">감지 시각</th>
+              <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider">
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">변경 시각</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">분류</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold">내용</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">변경자 · 출처</th>
+                <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-right px-4 py-2 font-bold whitespace-nowrap">감지 시각</th>
               </tr>
             </thead>
             <tbody id="audit-body"></tbody>
           </table>
         </div>
-        <div id="audit-pager" hidden class="p-3 border-t border-outline-variant/50"></div>
+        <div id="audit-pager" hidden class="p-3 border-t border-outline-variant/50 shrink-0"></div>
       </section>
 
       <!-- ============ SETTINGS ============ -->

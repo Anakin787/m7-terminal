@@ -27,15 +27,48 @@ const ALLOCATION_COLORS = {
   SAFE: "#0891b2", CORE: "#2563eb", GROWTH: "#c026d3", UNMANAGED: "#8d90a0",
 };
 
-const state = { view: "overview", range: "3M", allocBy: "market", history: null,
-                editingName: false, auditCategory: "", trading: null, health: null,
-                engineOpen: false, auditPage: 0, reportsPage: 0 };
-
 //: Rows per page. A report lands every weekday, so ten is about a fortnight;
 //: audit rows are taller (each carries its own change lines) and arrive in
-//: bursts when settings are edited.
-const AUDIT_PAGE_SIZE = 15;
+//: bursts when settings are edited, so a page of them is worth fewer rows.
+//: These are only the starting points - the pager lets the reader pick, and
+//: the choice outlives the tab. 100 is the API's own ceiling for /api/reports.
+const PAGE_SIZES = [10, 20, 50, 100];
+const AUDIT_PAGE_SIZE = 20;
 const REPORTS_PAGE_SIZE = 10;
+
+/** Read a saved rows-per-page, falling back to the default.
+ *
+ * Only values still on the menu are honoured: a size saved by an older build
+ * would show a page the picker cannot name. Storage can throw outright
+ * (private windows, blocked site data), and the default is a fine answer.
+ */
+function loadPageSize(key, fallback) {
+  try {
+    const saved = Number(window.localStorage.getItem(key));
+    if (PAGE_SIZES.includes(saved)) return saved;
+  } catch { /* no storage - use the default */ }
+  return fallback;
+}
+
+function savePageSize(key, size) {
+  try { window.localStorage.setItem(key, String(size)); } catch { /* not worth an error */ }
+}
+
+const state = { view: "overview", range: "3M", allocBy: "market", history: null,
+                editingName: false, auditCategory: "", trading: null, health: null,
+                engineOpen: false, auditPage: 0, reportsPage: 0,
+                auditSize: loadPageSize("m7.auditPageSize", AUDIT_PAGE_SIZE),
+                reportsSize: loadPageSize("m7.reportsPageSize", REPORTS_PAGE_SIZE) };
+
+/** Move to the page holding the row that was first on screen.
+ *
+ * Changing the page size mid-list should not teleport the reader back to the
+ * top of the log; keeping their first row in view is the least surprising
+ * thing a size change can do.
+ */
+function pageAfterResize(page, oldSize, newSize) {
+  return Math.floor((page * oldSize) / newSize);
+}
 
 /* ---------------------------------------------------------------- helpers */
 
@@ -635,7 +668,7 @@ function makeNameEditable(cell, position) {
  * quietly stops at a page it will not name is the same silence this project
  * keeps meeting elsewhere.
  */
-function renderPager(id, page, size, meta, goto) {
+function renderPager(id, page, size, meta, goto, onSize) {
   const el = $(id);
   if (!el) return;
   el.innerHTML = "";
@@ -655,7 +688,9 @@ function renderPager(id, page, size, meta, goto) {
   const single = !page && known && meta.total <= size;
 
   el.hidden = false;
-  el.className = "p-3 border-t border-outline-variant/50 flex items-center justify-between gap-3 flex-wrap";
+  // shrink-0: in a height-capped card the pager is a sibling of the scroll
+  // area, and a flex parent will happily squeeze it instead of the rows.
+  el.className = "p-3 border-t border-outline-variant/50 shrink-0 flex items-center justify-between gap-3 flex-wrap";
 
   // Past the end - reachable from a stale total, or from rows ageing out of
   // the audit scan between two clicks. Say so and keep "이전" alive rather
@@ -676,7 +711,14 @@ function renderPager(id, page, size, meta, goto) {
   if (meta.truncated) {
     summary.title = `최근 ${meta.total}건까지만 셉니다 — 그보다 오래된 기록은 이 표에 나오지 않습니다.`;
   }
-  el.appendChild(summary);
+  // The count and the control over it belong together, on the same side.
+  const left = document.createElement("div");
+  left.className = "flex items-center gap-3 flex-wrap";
+  left.appendChild(summary);
+  if (onSize) left.appendChild(pageSizePicker(size, onSize));
+  el.appendChild(left);
+  // One page holds everything, but the picker stays: it is how the reader
+  // got here, and how they get back to a shorter page.
   if (single) return;
 
   const nav = document.createElement("div");
@@ -710,11 +752,34 @@ function renderPager(id, page, size, meta, goto) {
   el.appendChild(nav);
 }
 
+/** The rows-per-page menu, drawn beside the count. */
+function pageSizePicker(size, onSize) {
+  const wrap = document.createElement("label");
+  wrap.className = "flex items-center gap-1.5 text-xs text-on-surface-variant/60";
+  const label = document.createElement("span");
+  label.textContent = "페이지당";
+  const select = document.createElement("select");
+  select.className = "bg-surface-container-high border border-outline-variant/40 rounded " +
+    "pl-2 pr-7 py-1 text-xs font-data-mono text-on-surface-variant cursor-pointer " +
+    "hover:border-outline-variant focus:outline-none focus:border-primary/60";
+  PAGE_SIZES.forEach((n) => {
+    const option = document.createElement("option");
+    option.value = String(n);
+    option.textContent = String(n);
+    option.selected = n === size;
+    select.appendChild(option);
+  });
+  select.addEventListener("change", () => onSize(Number(select.value)));
+  wrap.append(label, select);
+  return wrap;
+}
+
 /* --------------------------------------------------------------- reports */
 
 async function loadReports() {
-  const offset = state.reportsPage * REPORTS_PAGE_SIZE;
-  const data = await getJSON(`/api/reports?limit=${REPORTS_PAGE_SIZE}&offset=${offset}`);
+  const size = state.reportsSize;
+  const offset = state.reportsPage * size;
+  const data = await getJSON(`/api/reports?limit=${size}&offset=${offset}`);
   const body = $("reports-body");
   body.innerHTML = "";
   const reports = data.reports || [];
@@ -763,9 +828,19 @@ async function loadReports() {
     });
   }
 
-  renderPager("reports-pager", state.reportsPage, REPORTS_PAGE_SIZE,
+  const scroller = $("reports-scroll");
+  if (scroller) scroller.scrollTop = 0;   // a new page starts at its first row
+
+  const reload = () => loadReports().catch((err) => showError(String(err)));
+  renderPager("reports-pager", state.reportsPage, size,
     { total: data.total, shown: reports.length },
-    (page) => { state.reportsPage = page; loadReports().catch((err) => showError(String(err))); });
+    (page) => { state.reportsPage = page; reload(); },
+    (next) => {
+      state.reportsPage = pageAfterResize(state.reportsPage, size, next);
+      state.reportsSize = next;
+      savePageSize("m7.reportsPageSize", next);
+      reload();
+    });
 
   // Surface the newest AI comment on the Overview card too. This runs even
   // when the list is empty above - the card is driven by the same fetch.
@@ -1199,9 +1274,10 @@ function auditChangeLine(change) {
 }
 
 async function loadAudit() {
+  const size = state.auditSize;
   const params = new URLSearchParams({
-    limit: AUDIT_PAGE_SIZE,
-    offset: state.auditPage * AUDIT_PAGE_SIZE,
+    limit: size,
+    offset: state.auditPage * size,
   });
   if (state.auditCategory) params.set("category", state.auditCategory);
   const data = await getJSON(`/api/audit?${params}`);
@@ -1209,9 +1285,21 @@ async function loadAudit() {
   body.innerHTML = "";
   const entries = data.entries || [];
 
-  const auditPager = () => renderPager("audit-pager", state.auditPage, AUDIT_PAGE_SIZE,
+  // A new page starts at its first row. Without this the reader clicks "다음"
+  // and lands halfway down the new page, where the previous one was scrolled to.
+  const scroller = $("audit-scroll");
+  if (scroller) scroller.scrollTop = 0;
+
+  const reload = () => loadAudit().catch((err) => showError(String(err)));
+  const auditPager = () => renderPager("audit-pager", state.auditPage, size,
     { total: data.total, shown: entries.length, truncated: data.truncated },
-    (page) => { state.auditPage = page; loadAudit().catch((err) => showError(String(err))); });
+    (page) => { state.auditPage = page; reload(); },
+    (next) => {
+      state.auditPage = pageAfterResize(state.auditPage, size, next);
+      state.auditSize = next;
+      savePageSize("m7.auditPageSize", next);
+      reload();
+    });
 
   if (!entries.length) {
     body.innerHTML = `<tr><td colspan="5" class="px-4 py-8 text-center text-on-surface-variant">
