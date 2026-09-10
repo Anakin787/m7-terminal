@@ -19,6 +19,7 @@ constructing a context rather than by mocking a broker.
 
 import os
 from dataclasses import dataclass, field, replace
+from typing import Mapping
 from datetime import datetime, timedelta
 from decimal import Decimal
 
@@ -284,6 +285,11 @@ class OrderIntent:
     #: lenient mode against a MARKET signal with no quote.
     notional_krw: Decimal | None = None
 
+    #: The same value in the order's own currency. Kept alongside the KRW
+    #: figure because buying power is quoted per currency, so converting back
+    #: through the rate would only reintroduce the rounding the gate just did.
+    notional: Decimal | None = None
+
     #: Set only when the order is genuinely high-value *and* the limits allow
     #: it; the executor copies this straight into the request body.
     confirm_high_value: bool = False
@@ -297,6 +303,67 @@ class OrderIntent:
 
     def with_client_order_id(self, client_order_id):
         return replace(self, client_order_id=client_order_id)
+
+
+@dataclass(frozen=True)
+class BatchCommitment:
+    """What earlier approvals *in this same run* have already committed.
+
+    Every other input the gate reads is a snapshot taken once, before the
+    run's signals are evaluated - which is correct for the world, and wrong
+    for the batch. A weekly rebalance hands the gate eight signals at once
+    and each one used to be measured against a portfolio and a daily budget
+    in which none of the other seven existed. On 2026-09-09 the first live
+    batch approved 8 orders against ``order_count=0``; a limit of 10 would
+    not have stopped an eleventh, because the eleventh was also compared
+    against zero.
+
+    So this holds *deltas*, not totals. The context stays the world as it
+    was at the top of the run - the thing the caller actually read - and
+    each rule adds what this run has since promised. Empty is the identity,
+    which is what a single ``evaluate`` call with no batch gets.
+    """
+
+    order_count: int = 0
+    notional_krw: Decimal = ZERO
+
+    #: Buying power spent per currency, in that currency - not KRW. The
+    #: balance check compares against the broker's own figure, which is
+    #: denominated in the order's currency.
+    spent: Mapping = field(default_factory=dict)
+
+    #: Position value added per symbol, in KRW, for the concentration check.
+    bought_krw: Mapping = field(default_factory=dict)
+
+    #: Shares promised away per symbol, for the sellable check.
+    sold: Mapping = field(default_factory=dict)
+
+    def plus(self, intent):
+        """This commitment plus one approved order."""
+        notional_krw = intent.notional_krw or ZERO
+        spent = dict(self.spent)
+        bought_krw = dict(self.bought_krw)
+        sold = dict(self.sold)
+
+        # ``notional`` is what the gate priced this order at in its own
+        # currency - an amount order's amount, a quantity order's shares
+        # times the price the band check used. notional_krw is not reusable
+        # here: buying power is quoted per currency, never in KRW.
+        value = intent.notional
+        if intent.side == SIDE_BUY:
+            if value is not None:
+                spent[intent.currency] = spent.get(intent.currency, ZERO) + value
+            bought_krw[intent.symbol] = bought_krw.get(intent.symbol, ZERO) + notional_krw
+        elif intent.quantity is not None:
+            sold[intent.symbol] = sold.get(intent.symbol, ZERO) + intent.quantity
+
+        return BatchCommitment(
+            order_count=self.order_count + 1,
+            notional_krw=self.notional_krw + notional_krw,
+            spent=spent,
+            bought_krw=bought_krw,
+            sold=sold,
+        )
 
 
 @dataclass(frozen=True)
@@ -335,15 +402,21 @@ class RiskGate:
             return position.market_country
         return _CURRENCY_COUNTRY.get(signal.currency, "")
 
-    def evaluate(self, signal, ctx):
+    def evaluate(self, signal, ctx, committed=None):
         """Return a :class:`RiskDecision` for one signal.
 
         Rules run cheapest-and-most-absolute first, so a killed engine or an
         exhausted daily budget short-circuits before anything is priced. The
         first failing rule wins - the rejection names one cause rather than a
         list, because the first one is the one that has to be fixed.
+
+        ``committed`` is what the rest of this run has already been approved
+        for; see :class:`BatchCommitment`. Omit it and the signal is judged
+        against the context alone, which is right for a lone signal and wrong
+        for one of eight - use :meth:`evaluate_batch` for the latter.
         """
         limits = self.limits
+        committed = committed or BatchCommitment()
         strict = limits.strict
 
         # 1. Kill switch. Nothing gets past this, for any reason.
@@ -366,13 +439,14 @@ class RiskGate:
                 )
 
         usage = ctx.daily_usage or DailyUsage()
+        order_count = usage.order_count + committed.order_count
 
         # 2. Daily order count.
-        if usage.order_count >= limits.max_orders_per_day:
+        if order_count >= limits.max_orders_per_day:
             return _reject(
                 signal,
                 "daily-order-limit",
-                f"오늘 주문 {usage.order_count}건으로 한도({limits.max_orders_per_day}건)에 도달했습니다.",
+                f"오늘 주문 {order_count}건으로 한도({limits.max_orders_per_day}건)에 도달했습니다.",
             )
 
         country = self.country_of(signal, ctx)
@@ -425,12 +499,14 @@ class RiskGate:
                 notional_krw = None
 
         if notional_krw is not None:
-            budget_decision = self._check_budget(signal, ctx, notional_krw, limits, usage)
+            budget_decision = self._check_budget(
+                signal, ctx, notional_krw, limits, usage, committed
+            )
             if budget_decision is not None:
                 return budget_decision
 
         # 7. Can the account actually do this?
-        balance_decision = self._check_balance(signal, ctx, notional, strict)
+        balance_decision = self._check_balance(signal, ctx, notional, strict, committed)
         if balance_decision is not None:
             return balance_decision
 
@@ -458,9 +534,31 @@ class RiskGate:
                 amount=signal.amount,
                 limit_price=signal.limit_price if signal.order_type == ORDER_LIMIT else None,
                 notional_krw=notional_krw,
+                notional=notional,
                 confirm_high_value=confirm_high_value,
             ),
         )
+
+    def evaluate_batch(self, signals, ctx):
+        """Evaluate a run's signals in order, each seeing the ones before it.
+
+        Returns one :class:`RiskDecision` per signal, in the order given. The
+        order therefore decides who gets the last of a limit - which is the
+        strategy's ordering, not a ranking this module invents, and matches
+        what the executor would have done had it sent them one at a time.
+
+        Only *approved* signals commit anything. A rejection is not an order,
+        so it must not consume the budget the next signal is measured against
+        - the same reason ``Store.daily_usage`` skips rejected rows.
+        """
+        committed = BatchCommitment()
+        decisions = []
+        for signal in signals:
+            decision = self.evaluate(signal, ctx, committed=committed)
+            if decision.approved:
+                committed = committed.plus(decision.intent)
+            decisions.append(decision)
+        return decisions
 
     # ------------------------------------------------------------- rules
 
@@ -539,8 +637,8 @@ class RiskGate:
             )
         return None
 
-    def _check_budget(self, signal, ctx, notional_krw, limits, usage):
-        projected = usage.notional_krw + notional_krw
+    def _check_budget(self, signal, ctx, notional_krw, limits, usage, committed):
+        projected = usage.notional_krw + committed.notional_krw + notional_krw
         if projected > limits.max_daily_notional_krw:
             return _reject(
                 signal,
@@ -563,9 +661,9 @@ class RiskGate:
             return None
 
         position = ctx.position(signal.symbol)
-        held_krw = ZERO
+        held_krw = committed.bought_krw.get(signal.symbol, ZERO)
         if position is not None:
-            held_krw = ctx.to_krw(position.evaluation, position.currency) or ZERO
+            held_krw += ctx.to_krw(position.evaluation, position.currency) or ZERO
 
         cap = limits.max_position_weight_overrides.get(
             signal.symbol, limits.max_position_weight
@@ -580,9 +678,11 @@ class RiskGate:
             )
         return None
 
-    def _check_balance(self, signal, ctx, notional, strict):
+    def _check_balance(self, signal, ctx, notional, strict, committed):
         if signal.is_buy:
             available = ctx.buying_power.get(signal.currency)
+            if available is not None:
+                available -= committed.spent.get(signal.currency, ZERO)
             if available is None:
                 if strict:
                     return _reject(
@@ -604,6 +704,8 @@ class RiskGate:
         # Sell: an amount-denominated sell still needs shares, but how many is
         # the broker's arithmetic, so only a share-count sell can be checked.
         sellable = ctx.sellable.get(signal.symbol)
+        if sellable is not None:
+            sellable -= committed.sold.get(signal.symbol, ZERO)
         if sellable is None:
             if strict:
                 return _reject(

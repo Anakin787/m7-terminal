@@ -224,9 +224,11 @@ class Backtester:
             )
             signals = self.strategy.evaluate(ctx) or []
 
-            # 6. Real risk gate, every signal, approved or not.
-            for signal in signals:
-                decision = gate.evaluate(signal, ctx)
+            # 6. Real risk gate, every signal, approved or not. Batched for
+            # the same reason the live path is: ctx carries the day's usage as
+            # it stood before any of these signals, so evaluating them
+            # independently lets one day's batch walk past a daily limit.
+            for signal, decision in zip(signals, gate.evaluate_batch(signals, ctx)):
                 decisions.append(decision)
                 mode = (signal.meta or {}).get("mode")
                 recent_log.append(

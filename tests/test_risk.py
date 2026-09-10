@@ -485,3 +485,123 @@ def test_releasing_reports_whether_it_had_been_engaged(tmp_path):
     assert release_kill_switch(path) is True
     assert release_kill_switch(path) is False
     assert kill_switch_state(path)["active"] is False
+
+
+# ------------------------------------------------------------ batch limits
+#
+# One run hands the gate every signal a strategy produced, but the context was
+# read before any of them existed. Each of these fixes a way that used to let
+# a batch walk straight past a limit its members individually respected.
+# 2026-09-09 is the run that made this concrete: 8 approvals against a stored
+# order_count of 0.
+
+
+def rules_of(decisions):
+    return [rule_of(d) for d in decisions]
+
+
+def test_a_batch_stops_at_the_daily_order_count():
+    limits = RiskLimits(max_orders_per_day=3, max_position_weight=Decimal("1"))
+    signals = [buy(quantity=Decimal("1")) for _ in range(5)]
+
+    decisions = RiskGate(limits).evaluate_batch(signals, context())
+
+    assert rules_of(decisions) == [None, None, None, "daily-order-limit", "daily-order-limit"]
+
+
+def test_a_batch_counts_from_what_the_day_already_spent():
+    """The stored usage and the run's own approvals are the same budget."""
+    ctx = context(daily_usage=DailyUsage(order_count=2))
+    limits = RiskLimits(max_orders_per_day=3, max_position_weight=Decimal("1"))
+
+    decisions = RiskGate(limits).evaluate_batch([buy(quantity=Decimal("1"))] * 2, ctx)
+
+    assert rules_of(decisions) == [None, "daily-order-limit"]
+
+
+def test_a_batch_stops_at_the_daily_notional():
+    # 700,000 per order; the third would make 2,100,000.
+    limits = RiskLimits(
+        max_daily_notional_krw=Decimal("2000000"), max_position_weight=Decimal("1")
+    )
+
+    decisions = RiskGate(limits).evaluate_batch([buy()] * 3, context())
+
+    assert rules_of(decisions) == [None, None, "daily-notional-limit"]
+    assert "2,100,000" in decisions[2].rejection.detail
+
+
+def test_a_batch_cannot_spend_the_same_buying_power_twice():
+    signal = buy(
+        symbol="AAPL", currency="USD", quantity=Decimal("10"), limit_price=Decimal("200")
+    )
+    ctx = context(buying_power={"USD": Decimal("2500")})
+
+    decisions = RiskGate(_ROOMY).evaluate_batch([signal] * 2, ctx)
+
+    # 2,000 USD each: the first fits in 2,500, the second has 500 left.
+    assert rules_of(decisions) == [None, "insufficient-buying-power"]
+    assert "주문가능 500" in decisions[1].rejection.detail
+
+
+def test_a_market_buy_commits_the_price_the_gate_used():
+    """A MARKET order has no limit price, so its spend comes from the quote."""
+    signal = buy(
+        symbol="AAPL",
+        currency="USD",
+        order_type=ORDER_MARKET,
+        quantity=Decimal("10"),
+        limit_price=None,
+    )
+    ctx = context(buying_power={"USD": Decimal("2500")})
+
+    decisions = RiskGate(_ROOMY).evaluate_batch([signal] * 2, ctx)
+
+    # 10 x 200 = 2,000 quoted, not 0 - which is what an unpriced commitment
+    # would have committed, letting the second order through.
+    assert rules_of(decisions) == [None, "insufficient-buying-power"]
+
+
+def test_a_batch_cannot_sell_the_same_shares_twice():
+    signal = buy(side=SIDE_SELL, quantity=Decimal("6"))
+
+    decisions = RiskGate(_ROOMY).evaluate_batch([signal] * 2, context())
+
+    # 10 sellable: 6 goes, 6 more does not.
+    assert rules_of(decisions) == [None, "insufficient-sellable-quantity"]
+    assert "매도가능 4주" in decisions[1].rejection.detail
+
+
+def test_a_batch_concentrates_into_the_weight_cap():
+    # Already holding 700,000 of a 10,000,000 portfolio, and each order adds
+    # another 700,000. One order lands at 14%, inside the 20% cap; two land at
+    # 21%. Evaluated independently the second is 14% too, and goes through.
+    limits = RiskLimits(max_daily_notional_krw=Decimal("99999999"))
+
+    decisions = RiskGate(limits).evaluate_batch([buy()] * 2, context())
+
+    assert rules_of(decisions) == [None, "position-weight-limit"]
+    assert "21.0%" in decisions[1].rejection.detail
+
+
+def test_a_rejected_signal_commits_nothing():
+    """Only orders consume budget, the same rule ``daily_usage`` follows."""
+    limits = RiskLimits(
+        max_daily_notional_krw=Decimal("2000000"), max_position_weight=Decimal("1")
+    )
+    # The middle signal is rejected for an unrelated reason (no quote), and
+    # must not count toward the two orders the notional cap allows.
+    unpriced = buy(symbol="UNKNOWN", order_type=ORDER_MARKET, limit_price=None)
+
+    decisions = RiskGate(limits).evaluate_batch([buy(), unpriced, buy(), buy()], context())
+
+    assert rules_of(decisions) == [None, "price-unknown", None, "daily-notional-limit"]
+
+
+def test_a_lone_evaluate_is_unchanged_by_the_batch_machinery():
+    """The single-signal path still judges against the context alone."""
+    decision = RiskGate().evaluate(buy(), context())
+
+    assert decision.approved
+    assert decision.intent.notional_krw == Decimal("700000")
+    assert decision.intent.notional == Decimal("700000")

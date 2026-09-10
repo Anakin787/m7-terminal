@@ -209,8 +209,10 @@ def run(argv=None):
 
         gate = RiskGate(config.trading.risk_limits())
         approved, rejections = [], {}
-        for signal in signals:
-            decision = gate.evaluate(signal, ctx)
+        # Batch, not one-at-a-time: the daily limits are limits on the *day*,
+        # and a run's own earlier approvals are part of that day even though
+        # ctx was read before any of them existed.
+        for decision in gate.evaluate_batch(signals, ctx):
             signal_id = None if args.dry_run else store.save_decision(decision)
             if decision.approved:
                 approved.append((decision.intent, signal_id))
