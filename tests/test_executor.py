@@ -435,3 +435,62 @@ def test_daily_usage_follows_the_session_across_midnight(firestore_client):
 
     assert (by_session.order_count, by_session.notional_krw) == (1, Decimal("700000"))
     assert by_clock.order_count == 0  # the reset that used to happen
+
+
+# --------------------------------------------- ambiguity is not failure
+#
+# A POST that never came back may have been accepted. Recording that as
+# "failed" asserts no order exists - and failed is a resting state, so
+# nothing would ever check. These have to land where the reconciler looks.
+
+
+@pytest.mark.parametrize(
+    "code,status",
+    [
+        ("network-error", 0),  # the request timed out; TossClient gave up
+        ("server-error", 503),  # the broker admits it may not have finished
+        ("bad-gateway", 502),
+    ],
+)
+def test_an_unanswered_order_is_left_unknown_not_failed(firestore_client, code, status):
+    engine, trading = executor(
+        firestore_client, FakeTrading(outcomes=[error(code, status=status)])
+    )
+
+    record = engine.submit(intent())
+
+    assert record.status == STATUS_UNKNOWN
+    assert record.status in Store._OPEN_ORDER_STATUSES  # the reconciler will see it
+    assert len(trading.bodies) == 1  # not re-sent from here
+    assert record.error_code == code
+
+
+def test_a_definite_rejection_is_still_failed(firestore_client):
+    """4xx is the broker deciding, not the broker going quiet."""
+    engine, _ = executor(
+        firestore_client,
+        FakeTrading(outcomes=[error("insufficient-buying-power", status=422)]),
+    )
+
+    record = engine.submit(intent())
+
+    assert record.status == STATUS_FAILED
+    assert record.status not in Store._OPEN_ORDER_STATUSES
+
+
+def test_an_unanswered_order_is_not_re_sent_on_the_next_run(firestore_client):
+    """The id is already taken, so the retry finds it rather than ordering."""
+    shared = store(firestore_client)
+    first = OrderExecutor(
+        FakeTrading(outcomes=[error("network-error", status=0)]),
+        shared,
+        clock=CLOCK,
+    )
+    second_trading = FakeTrading()
+    second = OrderExecutor(second_trading, shared, clock=CLOCK)
+
+    assert first.submit(intent()).status == STATUS_UNKNOWN
+    again = second.submit(intent())
+
+    assert again.duplicate is True
+    assert second_trading.bodies == []

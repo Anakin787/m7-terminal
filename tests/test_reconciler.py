@@ -304,3 +304,125 @@ def test_pending_orders_ignores_paper_and_terminal_orders(firestore_client):
 
     pending = {o["client_order_id"] for o in db.pending_orders(mode="live")}
     assert pending == {"live-open", "live-partial"}
+
+
+# ------------------------------------------------------- amount orders settle
+#
+# bucket-dca buys are amount-denominated ("$50.98 of SHY"), so the stored
+# quantity is None and there is no share count for the fill to be measured
+# against. Every order the active strategy places is one of these, and they
+# used to sit at partially_filled for good - re-polled every thirty minutes,
+# never shown as filled - however plainly the broker said otherwise.
+
+
+def seed_amount_order(db, **overrides):
+    fields = dict(
+        quantity=None, amount="50.98", price=None, currency="USD",
+        symbol="SHY", notional_krw="68356", order_type="MARKET",
+    )
+    fields.update(overrides)
+    return seed_order(db, client_order_id="bucket_dca-SHY-2026-09-08-1", **fields)
+
+
+def test_an_amount_order_settles_on_a_zero_remaining_quantity(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    trading = FakeTrading(
+        order_responses={
+            "TOSS-1": {
+                "filledQuantity": "3",
+                "remainingQuantity": "0",
+                "avgFillPrice": "16.99",
+            }
+        }
+    )
+
+    reconciler(trading, db).run()
+
+    order = db.order_by_client_id(cid)
+    assert order["status"] == "filled"
+    assert order["filled_quantity"] == "3"
+    assert db.fills_for_order("TOSS-1")[0]["price"] == "16.99"
+
+
+def test_an_amount_order_settles_on_the_status_when_no_quantity_remains(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    trading = FakeTrading(
+        order_responses={"TOSS-1": {"filledQuantity": "3", "status": "FILLED"}}
+    )
+
+    reconciler(trading, db).run()
+
+    assert db.order_by_client_id(cid)["status"] == "filled"
+
+
+def test_an_amount_order_with_quantity_left_stays_partial(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    trading = FakeTrading(
+        order_responses={"TOSS-1": {"filledQuantity": "3", "remainingQuantity": "1"}}
+    )
+
+    reconciler(trading, db).run()
+
+    assert db.order_by_client_id(cid)["status"] == "partially_filled"
+
+
+@pytest.mark.parametrize("status", ["부분체결", "UNFILLED", "PARTIALLY_FILLED", "OPEN"])
+def test_a_status_that_merely_contains_filled_does_not_settle(firestore_client, status):
+    """"unfilled" contains "filled"; "미체결" contains "체결"."""
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    trading = FakeTrading(
+        order_responses={"TOSS-1": {"filledQuantity": "3", "status": status}}
+    )
+
+    reconciler(trading, db).run()
+
+    assert db.order_by_client_id(cid)["status"] == "partially_filled"
+
+
+def test_an_amount_order_with_no_evidence_either_way_stays_open(firestore_client):
+    """Never declare a fill nobody reported - the order keeps being polled."""
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    trading = FakeTrading(order_responses={"TOSS-1": {"filledQuantity": "3"}})
+
+    reconciler(trading, db).run()
+
+    order = db.order_by_client_id(cid)
+    assert order["status"] == "partially_filled"
+    assert cid in [o["client_order_id"] for o in db.pending_orders()]
+
+
+# ---------------------------------------------- unreadable versus not present
+
+
+def test_a_failed_lookup_is_retried_next_pass(firestore_client):
+    db = Store(firestore_client)
+    seed_order(db)
+    trading = FakeTrading(
+        order_responses={"TOSS-1": TossApiError(503, "server-error", "down")}
+    )
+
+    [result] = reconciler(trading, db).run()
+
+    assert "조회 실패" in result
+
+
+def test_an_order_absent_from_the_history_says_so_instead(firestore_client):
+    """The path an `unknown` order takes when the broker never got it.
+
+    Distinct from a failed lookup: the history was read, and this order is
+    not in it. Not marked failed either - that would assert no shares were
+    bought, from a list whose query shape this project cannot confirm.
+    """
+    db = Store(firestore_client)
+    cid = seed_order(db, status="unknown", order_id=None)
+    trading = FakeTrading(history=[{"clientOrderId": "someone-else-1"}])
+
+    [result] = reconciler(trading, db).run()
+
+    assert "브로커 주문 이력에 없습니다" in result
+    assert db.order_by_client_id(cid)["status"] == "unknown"

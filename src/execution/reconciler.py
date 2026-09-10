@@ -46,6 +46,12 @@ STATUS_REJECTED = "rejected"
 _CANCEL_HINTS = ("cancel", "취소")
 _REJECT_HINTS = ("reject", "거부", "실패")
 
+#: Read *before* the positive hints below, because several of these contain
+#: one as a substring: "unfilled" contains "filled", "미체결" contains "체결".
+#: Checking the other order would read every one of them as complete.
+_NOT_COMPLETE_HINTS = ("partial", "부분", "unfilled", "미체결", "pending", "open")
+_COMPLETE_HINTS = ("filled", "executed", "complete", "done", "체결완료", "완료")
+
 #: Field name candidates the broker's order/history payload might use.
 #: Unconfirmed - design section 2 documents the request shapes, not this
 #: response - so every reader here scans several spellings rather than
@@ -56,8 +62,18 @@ _AVG_PRICE_KEYS = ("avgFillPrice", "averagePrice", "executedPrice")
 _COMMISSION_KEYS = ("commission", "fee")
 _TAX_KEYS = ("tax",)
 _STATUS_KEYS = ("status", "orderStatus")
+_REMAINING_QTY_KEYS = (
+    "remainingQuantity", "unfilledQuantity", "restQuantity", "openQuantity",
+)
 _ORDER_ID_KEYS = ("orderId", "id")
 _CLIENT_ID_KEYS = ("clientOrderId", "client_order_id")
+
+
+#: Returned by _fetch when the broker could not be asked at all, as distinct
+#: from None, which is the broker answering that it has no such order. They
+#: call for opposite things - retry the question, versus stop asking it - and
+#: conflating them reported a missing order as a failed lookup forever.
+_UNREADABLE = object()
 
 
 def _pick(item, keys):
@@ -74,18 +90,47 @@ def _pick_decimal(item, keys):
     return to_decimal(value)
 
 
+def _complete_without_a_target(payload):
+    """Is an *amount* order finished? Its ordered quantity was never a number.
+
+    "$50.98 of SHY" names no share count, so there is nothing for the filled
+    quantity to be compared against - and comparing it to None used to mean
+    every amount order stayed ``partially_filled`` for good, however plainly
+    the broker said otherwise. Every buy the active strategy places is an
+    amount order, so that was all of them.
+
+    A remaining quantity is preferred over the status string for the same
+    reason the caller prefers quantities generally: it is a number, and the
+    status enum's spelling is not confirmed anywhere this project has a
+    source for. With neither available the answer stays "partially", which
+    keeps an order open rather than declaring a fill nobody reported.
+    """
+    remaining = _pick_decimal(payload, _REMAINING_QTY_KEYS)
+    if remaining is not None:
+        return STATUS_FILLED if remaining <= 0 else STATUS_PARTIALLY_FILLED
+
+    raw_status = str(_pick(payload, _STATUS_KEYS) or "").lower()
+    if any(hint in raw_status for hint in _NOT_COMPLETE_HINTS):
+        return STATUS_PARTIALLY_FILLED
+    if any(hint in raw_status for hint in _COMPLETE_HINTS):
+        return STATUS_FILLED
+    return STATUS_PARTIALLY_FILLED
+
+
 def _infer_status(payload, filled_qty, ordered_qty):
     """Fill state from quantities first, a status string only as a fallback.
 
     Quantities are numeric and unambiguous; a status enum's spelling is not
     confirmed anywhere this project has a source for, so it is only used to
-    catch the two states no quantity comparison can reveal - cancellation and
-    rejection, neither of which fills any shares.
+    catch what no quantity comparison can reveal - cancellation, rejection,
+    and whether an amount order that names no share count is finished.
     """
     if filled_qty is not None and filled_qty > 0:
-        if ordered_qty is not None and filled_qty >= ordered_qty:
-            return STATUS_FILLED
-        return STATUS_PARTIALLY_FILLED
+        if ordered_qty is not None:
+            return (
+                STATUS_FILLED if filled_qty >= ordered_qty else STATUS_PARTIALLY_FILLED
+            )
+        return _complete_without_a_target(payload)
 
     raw_status = str(_pick(payload, _STATUS_KEYS) or "").lower()
     if any(hint in raw_status for hint in _CANCEL_HINTS):
@@ -120,8 +165,19 @@ class Reconciler:
     def _reconcile_one(self, order):
         client_order_id = order["client_order_id"]
         payload = self._fetch(order)
-        if payload is None:
+        if payload is _UNREADABLE:
             return f"{client_order_id}: 조회 실패, 다음 실행에서 재시도"
+        if payload is None:
+            # The history was read and this order is not in it. Not marked
+            # failed: an order id absent from a list whose query shape this
+            # project has no confirmed source for is weak evidence, and
+            # "failed" would assert that no shares were bought. Said out loud
+            # instead, because an order stuck here needs a human, not another
+            # poll in thirty minutes.
+            return (
+                f"{client_order_id}: 브로커 주문 이력에 없습니다 — "
+                "접수되지 않았을 수 있습니다. 확인이 필요합니다."
+            )
 
         ordered_qty = to_decimal(order.get("quantity"))
         filled_qty = _pick_decimal(payload, _FILLED_QTY_KEYS)
@@ -163,14 +219,18 @@ class Reconciler:
         )
 
     def _fetch(self, order):
-        """The broker's current view of one order, or None if it could not be read."""
+        """The broker's current view of one order.
+
+        None means the broker answered and has no such order - a fact about
+        the order. ``_UNREADABLE`` means the question could not be asked.
+        """
         order_id = order.get("order_id")
         try:
             if order_id:
                 return self.trading.get_order(order_id) or {}
             return self._find_by_client_id(order["client_order_id"])
         except TossApiError:
-            return None
+            return _UNREADABLE
 
     def _find_by_client_id(self, client_order_id):
         """Scan the order history for a match, for orders with no orderId yet.

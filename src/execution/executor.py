@@ -36,6 +36,14 @@ RETRYABLE_PRICE_CODES = frozenset({"price-out-of-range", "invalid-tick-size"})
 #: position, so the only safe move is to look it up.
 IN_FLIGHT_CODES = frozenset({"request-in-progress", "already-processing"})
 
+#: Failures that say nothing about whether the order exists. A timed-out POST
+#: is the ambiguous case in its purest form - the request may have reached the
+#: broker and been accepted, with only the response lost - and a 5xx is the
+#: same story with the server admitting it. TossClient already re-sent these
+#: up to MAX_RETRIES times, safely, because clientOrderId is the idempotency
+#: key; what is left when those are exhausted is not knowledge of failure.
+AMBIGUOUS_CODES = frozenset({"network-error"})
+
 #: Rejections that disqualify a symbol or the whole account until a human
 #: intervenes. Surfaced separately so the caller can stop touching them.
 BLACKLIST_CODES = frozenset(
@@ -194,7 +202,24 @@ class OrderExecutor:
         if code in IN_FLIGHT_CODES:
             # Never re-send. Ask what happened instead - and if we cannot find
             # out, say so rather than guessing, because both guesses are bad.
-            return self._resolve_in_flight(client_order_id, exc)
+            return self._leave_unresolved(
+                client_order_id,
+                exc,
+                "처리 중 응답을 받아 재발주하지 않았습니다. "
+                "체결 여부는 주문 이력으로 확인해야 합니다.",
+            )
+
+        if code in AMBIGUOUS_CODES or (exc.status or 0) >= 500:
+            # Recording this as "failed" would be a claim we cannot support:
+            # failed means no order exists, and a lost response is exactly the
+            # case where one might. Left open for the reconciler, which finds
+            # it by clientOrderId - the lookup that exists for this.
+            return self._leave_unresolved(
+                client_order_id,
+                exc,
+                f"발주 응답을 받지 못했습니다({code}). 재발주하지 않았습니다. "
+                "체결 여부는 주문 이력으로 확인해야 합니다.",
+            )
 
         if code in RETRYABLE_PRICE_CODES and retry_price:
             reclamped = self._reclamp(intent, exc)
@@ -214,7 +239,7 @@ class OrderExecutor:
             blacklisted=code in BLACKLIST_CODES,
         )
 
-    def _resolve_in_flight(self, client_order_id, exc):
+    def _leave_unresolved(self, client_order_id, exc, detail):
         """Record an ambiguous request as unresolved, and stop.
 
         The order may or may not exist. Re-sending could double the position,
@@ -225,17 +250,12 @@ class OrderExecutor:
         would be guesswork on the one path where guessing is most expensive.
 
         Left as "unknown" on purpose: not "failed", because the order may
-        exist; not retried, because the order may exist. The reconciler in
-        step [9] settles these against the order history.
+        exist; not retried, because the order may exist. The reconciler
+        settles these against the order history, which is the one place a
+        clientOrderId can still be found.
         """
         return self._finish(
-            client_order_id,
-            STATUS_UNKNOWN,
-            error_code=exc.code,
-            detail=(
-                "처리 중 응답을 받아 재발주하지 않았습니다. "
-                "체결 여부는 주문 이력으로 확인해야 합니다."
-            ),
+            client_order_id, STATUS_UNKNOWN, error_code=exc.code, detail=detail
         )
 
     def _reclamp(self, intent, exc):
