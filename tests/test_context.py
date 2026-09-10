@@ -5,13 +5,14 @@ permitted. It leaves the field absent, and strict mode reads absent as
 "cannot verify".
 """
 
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
 from src.execution.context import build_context
 from src.execution.risk import RiskGate, RiskLimits
 from src.models import SOURCE_TOSS, PortfolioSnapshot, Position
 from src.store.repo import Store
+from src.strategy.bars import Bar, PriceHistory
 from src.strategy.base import SIDE_BUY, Signal
 from src.toss.errors import TossApiError
 
@@ -191,3 +192,59 @@ def test_the_kill_switch_file_is_picked_up(tmp_path, firestore_client):
     ctx = build_context(service, store, now=NOW, kill_switch_path=str(switch))
     assert ctx.kill_switch is True
     assert RiskGate(RiskLimits()).evaluate(signal(), ctx).rejection.rule == "kill-switch"
+
+
+# ------------------------------------------------------------- session date
+
+
+def history_ending(*dates):
+    """``{symbol: PriceHistory}`` whose last bars fall on ``dates``."""
+    return {
+        f"S{i}": PriceHistory(
+            symbol=f"S{i}",
+            bars=[
+                Bar(
+                    date=d,
+                    open=Decimal("100"),
+                    high=Decimal("100"),
+                    low=Decimal("100"),
+                    close=Decimal("100"),
+                )
+            ],
+        )
+        for i, d in enumerate(dates)
+    }
+
+
+def test_the_session_date_is_the_last_bar_not_the_wall_clock(tmp_path, firestore_client):
+    """The run happens on the 9th; the session it trades closed on the 8th."""
+    service = FakeService()
+    store = Store(firestore_client)
+
+    ctx = build_context(
+        service,
+        store,
+        now=datetime(2026, 9, 9, 23, 35, tzinfo=KST),
+        kill_switch_path=str(tmp_path / "none"),
+        history=history_ending(date(2026, 9, 8)),
+    )
+
+    assert ctx.session_date == date(2026, 9, 8)
+    assert ctx.now.date() == date(2026, 9, 9)
+
+
+def test_one_quiet_feed_does_not_drag_the_session_back(tmp_path, firestore_client):
+    ctx = build_context(
+        FakeService(),
+        Store(firestore_client),
+        now=NOW,
+        kill_switch_path=str(tmp_path / "none"),
+        history=history_ending(date(2026, 9, 8), date(2026, 9, 4)),
+    )
+
+    assert ctx.session_date == date(2026, 9, 8)
+
+
+def test_with_no_history_the_session_date_falls_back_to_today(tmp_path, firestore_client):
+    """Every caller with no bars loaded keeps the behaviour it always had."""
+    assert build(tmp_path, firestore_client).session_date == NOW.date()

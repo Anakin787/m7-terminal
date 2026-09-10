@@ -188,9 +188,14 @@ def run(argv=None):
         )
         if ctx.kill_switch:
             print("!!! KILL_SWITCH가 활성화되어 있습니다. 모든 신호가 거부됩니다.")
+        # The session date is printed because it is the one input that
+        # decides whether a run does anything at all, and every past silence
+        # in this project has come down to it: the eight-day gap, and the
+        # rebalance that fired three times a week. "It ran" and "it ran
+        # against Tuesday" are different sentences.
         print(
-            f"    보유 {len(ctx.positions)}종목 · 시세 {len(ctx.prices)}건 · "
-            f"오늘 주문 {ctx.daily_usage.order_count}건"
+            f"    세션 {ctx.session_date} · 보유 {len(ctx.positions)}종목 · "
+            f"시세 {len(ctx.prices)}건 · 이 세션 주문 {ctx.daily_usage.order_count}건"
         )
         # Named, not counted: a paused symbol changes what this run can do,
         # and "2종목 보류" would leave the reader to guess which two.
@@ -236,7 +241,10 @@ def run(argv=None):
             config, mode=mode, account_seq=service.account.resolve_account_seq()
         )
         executor = OrderExecutor(
-            trading, store, price_limits=ctx.price_limits
+            trading,
+            store,
+            price_limits=ctx.price_limits,
+            session_date=ctx.session_date,
         )
         for intent, signal_id in approved:
             record = executor.submit(intent, signal_id=signal_id)

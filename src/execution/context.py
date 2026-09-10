@@ -15,7 +15,7 @@ from datetime import datetime
 
 from src.execution.risk import kill_switch_active
 from src.models import to_decimal
-from src.strategy.base import MarketSession, StrategyContext
+from src.strategy.base import MarketSession, StrategyContext, session_date_of
 from src.toss.calendar import live_session, regular_window
 from src.toss.errors import TossError
 
@@ -73,7 +73,14 @@ def build_context(
         sellable=_sellable(service, held),
         price_limits=_price_limits(service, wanted),
         sessions=_sessions(service, now),
-        daily_usage=store.daily_usage(now.strftime("%Y-%m-%d")),
+        # Keyed on the session, not the clock: the limits are limits on a
+        # trading day, and this job runs 25 minutes before the wall-clock
+        # date turns over. session_date_of returns None with no history
+        # loaded, which falls back to the old behaviour.
+        daily_usage=store.daily_usage(
+            day=now.strftime("%Y-%m-%d"),
+            session_date=session_date_of(history or {}),
+        ),
         kill_switch=kill_switch_active(kill_switch_path, store=store),
         blocked_symbols=_blocked_symbols(store, now),
         history=history or {},

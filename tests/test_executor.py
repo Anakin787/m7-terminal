@@ -1,6 +1,6 @@
 """Order execution: idempotency, the PAPER guard, and the error policy."""
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 import pytest
@@ -345,3 +345,93 @@ def test_an_order_with_no_bracket_stores_none(firestore_client):
     row = engine.store.order_by_client_id(record.client_order_id)
     assert row["stop_loss_price"] is None
     assert row["take_profit_price"] is None
+
+
+# ------------------------------------------------- the trading day, not today
+#
+# The engine fires at 23:35 KST against a US session that closed that morning,
+# with a 30-minute task timeout and one retry - so a run and its own retry can
+# land on two different wall-clock dates while acting on the same session.
+# Everything that keeps an order from being placed twice has to key on the
+# session, or it all comes undone 25 minutes into the run.
+
+BEFORE_MIDNIGHT = lambda: datetime(2026, 9, 9, 23, 35)  # noqa: E731
+AFTER_MIDNIGHT = lambda: datetime(2026, 9, 10, 0, 5)  # noqa: E731
+SESSION = date(2026, 9, 8)
+
+
+def test_a_retry_past_midnight_places_no_second_order(firestore_client):
+    """The regression this whole field exists for."""
+    shared = store(firestore_client)
+    first = OrderExecutor(
+        FakeTrading(), shared, clock=BEFORE_MIDNIGHT, session_date=SESSION
+    )
+    retry_trading = FakeTrading()
+    retry = OrderExecutor(
+        retry_trading, shared, clock=AFTER_MIDNIGHT, session_date=SESSION
+    )
+
+    placed = first.submit(intent())
+    again = retry.submit(intent())
+
+    assert placed.client_order_id == again.client_order_id == "test-005930-2026-09-08-1"
+    assert again.duplicate is True
+    assert retry_trading.bodies == []  # nothing left the process
+    assert len(shared.recent_orders()) == 1
+
+
+def test_without_a_session_date_the_same_retry_would_have_re_ordered(firestore_client):
+    """Shows the bug, so the fix cannot be quietly reverted.
+
+    Same two attempts, same store, no session date - which is what the code
+    did before, and what any caller with no bars loaded still does.
+    """
+    shared = store(firestore_client)
+    first = OrderExecutor(FakeTrading(), shared, clock=BEFORE_MIDNIGHT)
+    retry_trading = FakeTrading()
+    retry = OrderExecutor(retry_trading, shared, clock=AFTER_MIDNIGHT)
+
+    placed = first.submit(intent())
+    again = retry.submit(intent())
+
+    assert placed.client_order_id != again.client_order_id
+    assert again.duplicate is False
+    assert len(retry_trading.bodies) == 1  # a second real order
+    assert len(shared.recent_orders()) == 2
+
+
+def test_the_session_date_is_stored_on_the_order(firestore_client):
+    shared = store(firestore_client)
+    engine = OrderExecutor(
+        FakeTrading(), shared, clock=BEFORE_MIDNIGHT, session_date=SESSION
+    )
+
+    engine.submit(intent())
+
+    row = shared.recent_orders()[0]
+    # Stored alongside ts, not instead of it: one is when the order happened,
+    # the other is the session it was trading. They routinely disagree.
+    assert row["session_date"] == "2026-09-08"
+    assert row["ts"] is not None
+
+
+def test_daily_usage_follows_the_session_across_midnight(firestore_client):
+    """The limits must not reset when the retry crosses into a new day.
+
+    ts is stamped by the store's own clock, so it is set explicitly here to
+    put the order where the scheduled run actually lands it: 23:35 on the day
+    *after* the session it is trading.
+    """
+    shared = store(firestore_client)
+    shared.save_order(
+        intent().with_client_order_id("test-005930-2026-09-08-1"),
+        status="submitted",
+        ts="2026-09-09T23:35:54",
+        session_date=SESSION,
+    )
+
+    by_session = shared.daily_usage(session_date=SESSION)
+    by_clock = shared.daily_usage(day="2026-09-10")  # what the retry would ask
+
+    assert (by_session.order_count, by_session.notional_krw) == (1, Decimal("700000"))
+    assert by_clock.order_count == 0  # the reset that used to happen

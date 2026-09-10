@@ -76,9 +76,18 @@ class OrderRecord:
 
 
 class OrderExecutor:
-    def __init__(self, trading, store, mode=None, clock=None, price_limits=None):
+    def __init__(
+        self, trading, store, mode=None, clock=None, price_limits=None,
+        session_date=None,
+    ):
         self.trading = trading
         self.store = store
+        #: The trading day these orders belong to, which is what the
+        #: client_order_id is keyed on. Falls back to the wall clock when the
+        #: caller has no session to name (tests, and any path with no bars),
+        #: which is what this did before - and is wrong for the scheduled
+        #: 23:35 KST run, whose retry window crosses KST midnight.
+        self.session_date = session_date
         #: ``{symbol: (low, high)}``, normally the same mapping the risk gate
         #: read. Used to clamp a price the market moved away from; without it
         #: a price rejection is simply not retried.
@@ -126,7 +135,11 @@ class OrderExecutor:
         # Written before the request. An unanswered POST still leaves this
         # row, so the next run sees the id and stops instead of re-ordering.
         self.store.save_order(
-            intent, signal_id=signal_id, status=STATUS_PENDING, mode=self.mode.value
+            intent,
+            signal_id=signal_id,
+            status=STATUS_PENDING,
+            mode=self.mode.value,
+            session_date=self.session_date,
         )
 
         if self.mode is TradingMode.PAPER:
@@ -140,7 +153,15 @@ class OrderExecutor:
         if intent.client_order_id:
             return intent
 
-        day = self.clock().strftime("%Y-%m-%d")
+        # The session date, not today's date. Two attempts at the same run
+        # must derive the same id or the second one is a second real order,
+        # and the scheduled run starts 25 minutes before the wall-clock date
+        # it would otherwise be keyed on rolls over.
+        day = (
+            str(self.session_date)[:10]
+            if self.session_date is not None
+            else self.clock().strftime("%Y-%m-%d")
+        )
         key = (intent.strategy, intent.symbol, day)
         seq = self._seq[key] = self._seq.get(key, 0) + 1
         return intent.with_client_order_id(

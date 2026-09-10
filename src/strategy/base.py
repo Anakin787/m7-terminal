@@ -165,6 +165,19 @@ class DailyUsage:
     notional_krw: Decimal = ZERO
 
 
+def session_date_of(history):
+    """The latest completed session across ``{symbol: PriceHistory}``.
+
+    The max, not any one symbol's: a single feed going quiet must not drag
+    the whole run back a day. Returns None for an empty or unloaded history,
+    leaving the fallback to the caller.
+    """
+    dates = [
+        h.last_date for h in (history or {}).values() if getattr(h, "last_date", None)
+    ]
+    return max(dates) if dates else None
+
+
 @dataclass(frozen=True)
 class StrategyContext:
     """Everything a strategy - and then the risk gate - is allowed to see.
@@ -211,6 +224,25 @@ class StrategyContext:
     def bars(self, symbol):
         """The PriceHistory for ``symbol``, or None if none was supplied."""
         return self.history.get(symbol)
+
+    @property
+    def session_date(self):
+        """The trading day this run is acting on, not the day it runs on.
+
+        The two differ by design: the engine fires at 23:35 KST against the
+        US session that closed that morning, so a run started at 23:35 and
+        its retry at 00:05 are the same trading day under two wall-clock
+        dates. Anything keyed on the wall clock therefore splits in half at
+        KST midnight - which is 25 minutes after the job starts, and less
+        than its 30-minute task timeout.
+
+        Taken from the bars rather than from a calendar because the bars are
+        what the strategies call ``today`` (``bucket_dca.evaluate``), and a
+        second opinion here could disagree with the prices being traded on.
+        """
+        return session_date_of(self.history) or (
+            self.now.date() if hasattr(self.now, "date") else self.now
+        )
 
     def closes(self, symbol, n=None):
         """Adjusted closes for ``symbol``, oldest first, or () if unknown."""

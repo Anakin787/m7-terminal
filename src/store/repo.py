@@ -442,26 +442,42 @@ class Store:
 
     # ---------------------------------------------------------------- orders
 
-    def daily_usage(self, day=None):
-        """Today's order count and total notional, for the risk gate.
+    def daily_usage(self, day=None, session_date=None):
+        """This trading day's order count and total notional, for the risk gate.
 
         Counts what was actually sent, so a rejected signal never consumes
         budget. Paper orders are counted too: a paper run that would have
         blown the daily limit should say so rather than look clean.
 
+        Given a ``session_date`` the window is the *trading* day, which is the
+        one the limits are about. Keying on ``ts`` instead splits a 23:35 KST
+        run from its own retry at 00:05 and hands the retry an empty budget -
+        the run is still acting on the same US session, so it would re-emit
+        the same signals against limits that had silently reset. ``day``
+        remains for callers with no session to name (the dashboard, tests).
+
+        An equality filter on one field needs no composite index, unlike the
+        ``where`` + ``order_by`` pairing that made ``recent_audit`` filter in
+        Python - see the note there.
+
         Summed in Python rather than via a Firestore aggregation query - the
         order volume here is small enough that this is simpler, and it keeps
         the total on Decimal instead of a server-side float.
         """
-        day = day or _clock().strftime("%Y-%m-%d")
-        next_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime(
-            "%Y-%m-%d"
-        )
-        query = (
-            self.client.collection("orders")
-            .where(filter=FieldFilter("ts", ">=", day))
-            .where(filter=FieldFilter("ts", "<", next_day))
-        )
+        if session_date is not None:
+            query = self.client.collection("orders").where(
+                filter=FieldFilter("session_date", "==", str(session_date))
+            )
+        else:
+            day = day or _clock().strftime("%Y-%m-%d")
+            next_day = (datetime.strptime(day, "%Y-%m-%d") + timedelta(days=1)).strftime(
+                "%Y-%m-%d"
+            )
+            query = (
+                self.client.collection("orders")
+                .where(filter=FieldFilter("ts", ">=", day))
+                .where(filter=FieldFilter("ts", "<", next_day))
+            )
 
         count = 0
         total = Decimal(0)
@@ -474,7 +490,10 @@ class Store:
 
         return DailyUsage(order_count=count, notional_krw=total.quantize(Decimal("1")))
 
-    def save_order(self, intent, signal_id=None, status="pending", mode="paper", ts=None):
+    def save_order(
+        self, intent, signal_id=None, status="pending", mode="paper", ts=None,
+        session_date=None,
+    ):
         """Record an order before it is sent.
 
         Written ahead of the request on purpose: if the response never
@@ -485,6 +504,13 @@ class Store:
         that produced this order, not looked up later, because the
         reconciler needs them once the entry fills and has no other way back
         to the strategy's original intent - only the persisted order.
+
+        ``session_date`` is the trading day the order belongs to, which is not
+        the day ``ts`` falls on: the engine runs at 23:35 KST against a US
+        session that closed that morning. It is stored rather than derived
+        because deriving it later would mean re-deciding a calendar question
+        from a timestamp, and getting it wrong by a day is what lets a
+        retry past midnight look like a fresh day with an empty budget.
         """
         ts = ts or _now(precise=True)
         signal = intent.signal
@@ -503,6 +529,7 @@ class Store:
                     "price": _text(intent.limit_price),
                     "currency": intent.currency,
                     "notional_krw": _text(intent.notional_krw),
+                    "session_date": _text(session_date),
                     "status": status,
                     "mode": mode,
                     "order_id": None,
