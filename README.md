@@ -236,6 +236,21 @@ python trade.py --live        # 현재 거부됨 (아래 참고)
 
 > **`--live`는 아직 열려 있지 않습니다.** reconciler와 OCO는 이제 있지만, 설계 [10]이 요구하는 "최소 수량 1주로 실거래 검증"은 별도 단계입니다.
 
+**그 검증은 `scripts/live_check.py`로 합니다.** `trade.py`는 전략이 낸 신호를 통째로 처리하는 것밖에 못 하고, bucket-dca는 한 번에 8건 수백 달러어치를 냅니다 — 첫 실거래로 삼을 수 없습니다.
+
+```bash
+python scripts/live_check.py --symbol SHY              # 전송 없음. 게이트 판정과 보낼 내용만
+python scripts/live_check.py --symbol SHY --execute    # 실제로 1주 매수
+python scripts/live_check.py --symbol SHY --amount 5 --execute   # 금액 주문 경로
+python scripts/live_check.py --settle                  # 미체결 LIVE 주문 체결 확인
+```
+
+우회로가 아닙니다 — 같은 `build_context`, 같은 `RiskGate`, 같은 `OrderExecutor`를 씁니다. API를 직접 부르는 스크립트였다면 토스가 동작한다는 것만 증명하고 이 프로젝트가 실제로 작성한 부분은 전부 미검증으로 남습니다.
+
+**금액 주문으로 한 번 더 돌릴 값어치가 있습니다.** bucket-dca 매수는 전부 금액 주문이고, reconciler는 그걸 수량 주문과 **다른 분기**에서 정산합니다 — 2026-09-10까지 `filled`에 도달할 수 없었던 그 분기입니다. 1주는 경로를 증명하고, 소액 금액 주문은 실제 주문이 탈 분기를 증명합니다.
+
+**여기가 LIVE가 열리는 유일한 지점입니다.** `trade.py --live`는 여전히 거부되고, 예약된 Cloud Run 잡은 그 플래그를 넘기지 않습니다(`args: python trade.py`). 그래서 이 스크립트는 `--execute` 없이는 아무것도 보내지 않고, 보낼 때는 **종목코드를 그대로 타이핑**해야 하며(`y` 로는 안 됩니다), 대화형 터미널이 아니면 `--yes` 없이는 거부합니다. 어떤 잡의 인자에도 들어 있지 않습니다.
+
 **OCO는 진입 체결 이후에만 등록됩니다.** executor가 주문을 낼 때가 아니라 — 아직 체결되지 않은 주문에 손절을 거는 건 의미가 없고, 부분체결이면 그 수량만큼만 걸어야 합니다. 그래서 신호의 `stop_loss_price`/`take_profit_price`는 주문에 실려 저장되고, `--reconcile`이 체결을 확인한 뒤에야 조건주문을 보냅니다. 브라켓 만료일(`trading.oco_expire_days`)과 손절 주문가의 슬리피지(`trading.oco_stop_loss_slippage`)는 `config.example.yaml`을 참고하세요.
 
 > **알려진 한계**: 한국 주식의 실제 호가단위(가격대별로 1원~1,000원까지 계단식)는 적용하지 않습니다 — 확인된 근거가 없어 추측으로 규칙을 넣느니 `invalid-tick-size` 거부로 드러나게 뒀습니다. `GET /orders` 응답의 정확한 필드명(체결수량·평균단가 등)도 미확정이라 여러 철자를 방어적으로 시도합니다 — 시세·캘린더 파서와 같은 방식입니다.
