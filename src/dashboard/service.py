@@ -88,6 +88,19 @@ def _exchange_today():
         return datetime.now().date()
 
 
+def _close_on_or_before(closes, day):
+    """The benchmark's last close at or before ``day``.
+
+    Snapshots land on weekends and holidays; the exchange does not. Demanding
+    an exact match would drop those points and leave the comparison line full
+    of holes on precisely the days the account line is drawn.
+    """
+    if day in closes:
+        return closes[day]
+    earlier = [d for d in closes if d <= day]
+    return closes[max(earlier)] if earlier else None
+
+
 def _make_previous_close_fn():
     """A cache-first, best-effort previous-close lookup for manual holdings.
 
@@ -302,8 +315,90 @@ class DashboardService:
                 }
                 for row in rows
             ],
+            "benchmark": self._benchmark_series(rows),
             "total_snapshots": self.store.snapshot_count(),
         }
+
+    def _benchmark_series(self, rows):
+        """What the same money, moved on the same days, would be worth in QQQ.
+
+        A return with nothing beside it cannot be read. -39% is a disaster or
+        a good quarter depending on what the market did, and every screen here
+        reported the first number without ever reporting the second.
+
+        The benchmark is given *the same cash flows*, not just the same
+        starting value. Rebasing once at the window start looks simpler and
+        lies the moment money enters: this account's cost basis rose 670,723
+        KRW on 2026-09-11, and a benchmark that did not receive it would have
+        shown the deposit as the strategy beating the market. So a rise in
+        ``purchase_krw`` buys that much more of the benchmark on that day.
+
+        A fall in cost basis - a sale - is deliberately not sold back. It is
+        usually a reallocation inside the account rather than money leaving,
+        and treating it as a withdrawal would hand the benchmark a cash
+        position the account never held.
+
+        Returns None when there is nothing honest to draw: too few snapshots,
+        or no bar for the day the comparison would start from.
+        """
+        if len(rows) < 3:
+            return None
+
+        symbol = self._benchmark_symbol()
+        closes = self._benchmark_closes(symbol, rows)
+        if not closes:
+            return None
+
+        first_close = _close_on_or_before(closes, rows[0]["ts"][:10])
+        if not first_close or first_close <= 0:
+            return None
+
+        units = Decimal(rows[0]["total_krw"]) / first_close
+        previous_cost = Decimal(rows[0]["purchase_krw"])
+        points = []
+        for row in rows:
+            close = _close_on_or_before(closes, row["ts"][:10])
+            if not close or close <= 0:
+                continue
+            cost = Decimal(row["purchase_krw"])
+            contributed = cost - previous_cost
+            if contributed > 0:
+                units += contributed / close
+            previous_cost = cost
+            points.append({"ts": row["ts"], "total_krw": _num(units * close)})
+
+        if len(points) < 3:
+            return None
+
+        start, end = points[0]["total_krw"], points[-1]["total_krw"]
+        mine_start, mine_end = rows[0]["total_krw"], rows[-1]["total_krw"]
+        return {
+            "symbol": symbol,
+            "points": points,
+            "return": _num((end - start) / start) if start else None,
+            # Measured the same way, against the same starting value, so the
+            # two numbers are comparable even though the account's own
+            # profit_rate is computed against cost basis instead.
+            "mine_return": _num((mine_end - mine_start) / mine_start) if mine_start else None,
+        }
+
+    def _benchmark_symbol(self):
+        """Whatever the loaded strategy measures itself against."""
+        params = self.config.trading.strategy_params or {}
+        return str(params.get("benchmark") or "QQQ").upper()
+
+    def _benchmark_closes(self, symbol, rows):
+        """``{date: close}`` covering the snapshot window, cached like the rest."""
+        start = date.fromisoformat(rows[0]["ts"][:10]) - timedelta(days=10)
+        end = date.fromisoformat(rows[-1]["ts"][:10])
+        cached = self._bars.setdefault(("__bench__", symbol, str(start)), _Cached(TTL_BARS))
+        value, _ = cached.get(lambda: self._load_closes(symbol, start, end))
+        return value or {}
+
+    def _load_closes(self, symbol, start, end):
+        histories = self._bar_loader().load([symbol], start, end)
+        history = histories.get(symbol)
+        return {bar.date.isoformat(): bar.close for bar in (history or ())}
 
     def allocation(self, by="market"):
         snapshot, error = self.snapshot()
@@ -486,6 +581,40 @@ class DashboardService:
             "kill_switch": state,
             "halted": bool(state["active"]),
         }
+
+    def vetoes(self):
+        """AI buy-holds, for a screen that can show and lift them.
+
+        These were invisible before: the engine printed the hold in its run
+        log and the gate rejected on it, but nothing a person looks at said
+        a symbol was paused - or offered any way to lift it.
+        """
+        rows = self.store.vetoes()
+        return {"vetoes": rows, "active_count": sum(1 for r in rows if r["active"])}
+
+    def clear_veto(self, symbol, actor=None):
+        """Lift one veto, and audit it.
+
+        Audited like the kill switch, and for the same reason: this changes
+        what the engine is allowed to do on its next run. The delete happens
+        first - a lift nobody logged beats a log of a lift that did not
+        happen.
+        """
+        from src.audit import veto_cleared_entry
+
+        symbol = (symbol or "").strip().upper()
+        existing = {row["symbol"]: row for row in self.store.vetoes()}.get(symbol)
+        if existing is None:
+            return {"symbol": symbol, "cleared": False}
+
+        self.store.clear_veto(symbol)
+        try:
+            self.store.save_audit_entries(
+                [veto_cleared_entry(symbol, existing.get("reason"), actor=actor or "dashboard")]
+            )
+        except Exception:  # noqa: BLE001 - the lift already happened
+            pass
+        return {"symbol": symbol, "cleared": True}
 
     def set_kill_switch(self, active, reason=None, actor=None):
         """Engage or release the kill switch, and audit a real transition.

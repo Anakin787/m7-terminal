@@ -135,6 +135,19 @@ async function getJSON(url) {
   return response.json();
 }
 
+/** Text going into an innerHTML template.
+ *
+ * Most of this file builds rows with createElement and textContent, which
+ * needs none of this. The places that use a template string do, and the
+ * strings most worth escaping are the ones a model wrote: a veto's reason
+ * and its evidence headline come from Gemini by way of Firestore.
+ */
+function escapeHTML(value) {
+  const node = document.createElement("span");
+  node.textContent = value == null ? "" : String(value);
+  return node.innerHTML;
+}
+
 function showError(detail) {
   $("error-detail").textContent = detail || "";
   $("error-banner").hidden = !detail;
@@ -193,7 +206,10 @@ function setView(requested) {
   // documents every fifteen seconds would spend a day's free-tier read quota
   // on an idle hour to show the same rows back. Leaving and returning to the
   // page reloads it.
-  if (view === "trading") loadTradingActivity().catch((err) => showError(String(err)));
+  if (view === "trading") {
+    loadTradingActivity().catch((err) => showError(String(err)));
+    loadVetoes().catch((err) => showError(String(err)));
+  }
   if (view === "settings") loadSettings();
 }
 
@@ -378,9 +394,17 @@ function renderChart(data) {
   const innerW = Math.max(1, W - pad.left - pad.right);
   const innerH = Math.max(1, H - pad.top - pad.bottom);
 
+  // The benchmark shares the account's y-scale because it is denominated in
+  // the same won: it is what the same money, moved on the same days, would
+  // be worth in the index. A second axis would invite reading the gap as
+  // bigger or smaller than it is.
+  const bench = data.benchmark;
+  const benchByTs = new Map((bench && bench.points || []).map((p) => [p.ts, p.total_krw]));
+  const benchValues = [...benchByTs.values()];
+
   const values = points.map((p) => p.total_krw);
-  let min = Math.min(...values);
-  let max = Math.max(...values);
+  let min = Math.min(...values, ...benchValues);
+  let max = Math.max(...values, ...benchValues);
   if (min === max) { min -= 1; max += 1; }
   const span = max - min;
   min -= span * 0.1;
@@ -391,6 +415,22 @@ function renderChart(data) {
 
   const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.total_krw).toFixed(1)}`).join(" ");
   const area = `${line} L${x(points.length - 1).toFixed(1)},${pad.top + innerH} L${x(0).toFixed(1)},${pad.top + innerH} Z`;
+
+  // Drawn by index against the account's own points, skipping any snapshot
+  // the index had no bar for, so a hole stays a hole instead of sliding the
+  // rest of the line sideways.
+  let benchPath = "";
+  let started = false;
+  points.forEach((p, i) => {
+    const value = benchByTs.get(p.ts);
+    if (value === undefined) return;
+    benchPath += `${started ? "L" : "M"}${x(i).toFixed(1)},${y(value).toFixed(1)}`;
+    started = true;
+  });
+  const benchLine = benchPath
+    ? `<path d="${benchPath}" fill="none" stroke="${COLORS.inkMuted}" stroke-opacity="0.75" stroke-width="1.5" stroke-dasharray="4 3" stroke-linejoin="round"/>`
+    : "";
+  renderBenchmarkLegend(bench);
 
   // Four recessive gridlines with value labels; axis text uses ink tokens,
   // never the series colour.
@@ -413,6 +453,7 @@ function renderChart(data) {
     </linearGradient></defs>
     ${grid}
     <path d="${area}" fill="url(#areaFill)"/>
+    ${benchLine}
     <path d="${line}" fill="none" stroke="${COLORS.primary}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
     <text x="${pad.left}" y="${H - 8}" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${firstLabel}</text>
     <text x="${W - pad.right}" y="${H - 8}" text-anchor="end" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${lastLabel}</text>
@@ -430,6 +471,25 @@ function renderChart(data) {
  * the tooltip says about it (`describe`). The `ids` argument names the host
  * and tooltip elements, since the two charts live on different views.
  */
+/** The account against its benchmark, in words, under the chart. */
+function renderBenchmarkLegend(bench) {
+  const host = $("chart-legend");
+  if (!host) return;
+  if (!bench || bench.mine_return === null || bench.return === null) {
+    host.innerHTML = "";
+    return;
+  }
+  const lead = bench.mine_return - bench.return;
+  const cls = lead >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim";
+  host.innerHTML =
+    `<span class="inline-flex items-center gap-1.5"><span class="inline-block w-4 h-0.5" style="background:${COLORS.primary}"></span>` +
+    `<span class="text-on-surface-variant/70">내 계좌</span> <span class="font-bold text-on-surface">${fmtPct(bench.mine_return)}</span></span>` +
+    `<span class="inline-flex items-center gap-1.5"><span class="inline-block w-4 border-t-2 border-dashed" style="border-color:${COLORS.inkMuted}"></span>` +
+    `<span class="text-on-surface-variant/70">${bench.symbol}</span> <span class="font-bold text-on-surface">${fmtPct(bench.return)}</span></span>` +
+    `<span class="${cls} font-bold">${lead >= 0 ? "+" : ""}${fmtPct(lead)}</span>` +
+    `<span class="text-on-surface-variant/40">같은 시점에 같은 금액을 ${bench.symbol}에 넣었다면</span>`;
+}
+
 function attachHover(svg, points, x, y, pad, innerH, options = {}) {
   const valueOf = options.valueOf || ((p) => p.total_krw);
   const describe = options.describe || ((p) =>
@@ -559,6 +619,63 @@ function renderDonut(segments, legendSegments) {
   const lead = segments[0] || rows[0];
   $("donut-label").textContent = lead.label || lead.key;
   $("donut-value").textContent = (lead.share * 100).toFixed(0) + "%";
+}
+
+/* ------------------------------------------------------------- AI vetoes */
+/* A veto blocks *buys* for a symbol. The engine printed the hold in its run
+ * log and the gate rejected on it, but nothing a person looks at said a
+ * symbol was paused, or offered any way to lift it. */
+
+async function loadVetoes() {
+  const data = await getJSON("/api/vetoes");
+  const rows = data.vetoes || [];
+  const card = $("veto-card");
+
+  // Hidden when there is nothing held back: an empty card on a page that
+  // already folds Engine Control away would be one more thing to scroll past.
+  card.hidden = rows.length === 0;
+  if (!rows.length) return;
+
+  $("veto-count").textContent = `${data.active_count}건 보류 중`;
+  $("veto-list").innerHTML = rows.map((row) => {
+    const tone = row.active
+      ? "border-warning/40 bg-warning/5"
+      : "border-outline-variant/25 opacity-60";
+    return `<div class="rounded border ${tone} px-3 py-2 flex items-start justify-between gap-3">
+      <div class="min-w-0">
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="font-data-mono font-bold text-on-surface">${row.symbol}</span>
+          ${row.active ? "" : `<span class="text-[10px] font-bold px-1.5 py-0.5 rounded bg-surface-container-highest text-on-surface-variant/70">만료됨</span>`}
+          ${row.ts ? `<span class="font-data-mono text-[10px] text-on-surface-variant/50">${row.ts.slice(0, 10)}</span>` : ""}
+        </div>
+        <p class="text-on-surface-variant text-sm mt-1">${escapeHTML(row.reason)}</p>
+        ${row.evidence ? `<p class="text-on-surface-variant/50 text-xs mt-1">근거: ${escapeHTML(row.evidence)}</p>` : ""}
+      </div>
+      <button data-veto-clear="${row.symbol}" class="shrink-0 text-xs font-bold px-2.5 py-1 rounded border border-outline-variant/50 text-on-surface-variant hover:text-on-surface hover:bg-surface-container-high transition-colors">해제</button>
+    </div>`;
+  }).join("");
+
+  $("veto-list").querySelectorAll("[data-veto-clear]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const symbol = button.dataset.vetoClear;
+      // Confirmed, because lifting a hold is what lets the engine buy the
+      // thing a model decided to stand back from.
+      if (!window.confirm(`${symbol} 매수 보류를 해제할까요?\n다음 실행부터 이 종목을 매수할 수 있게 됩니다.`)) return;
+      button.disabled = true;
+      try {
+        const response = await fetch(`/api/vetoes/${encodeURIComponent(symbol)}`,
+                                     { method: "DELETE" });
+        if (!response.ok) throw new Error(`${response.status} ${response.statusText}`);
+        await loadVetoes();
+        // The hold was one of the reasons the engine did what it did, so the
+        // log that explains that should not still be showing the old world.
+        if (state.view === "audit") loadAudit().catch(() => {});
+      } catch (err) {
+        button.disabled = false;
+        showError(String(err));
+      }
+    });
+  });
 }
 
 /* ------------------------------------------------- holding price chart */

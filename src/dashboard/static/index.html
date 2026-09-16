@@ -231,6 +231,7 @@
               </div>
               <div id="tooltip" hidden class="absolute pointer-events-none z-20 bg-surface-container-high border border-outline-variant rounded px-3 py-2 shadow-lg font-data-mono text-xs whitespace-nowrap"></div>
             </div>
+            <div id="chart-legend" class="flex flex-wrap items-center gap-x-4 gap-y-1 mt-3 font-data-mono text-xs"></div>
           </div>
 
           <!-- Allocation -->
@@ -335,6 +336,19 @@
 
       <!-- ============ TRADING ============ -->
       <section data-view="trading" hidden class="space-y-gutter">
+
+        <!-- AI buy-holds: visible, and liftable -->
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 p-4" id="veto-card" hidden>
+          <div class="flex items-start justify-between gap-3 mb-3">
+            <div>
+              <h3 class="text-headline-md font-bold text-on-surface">AI 매수 보류</h3>
+              <p class="text-on-surface-variant/50 text-xs mt-0.5">보류된 종목은 <span class="font-bold">매수만</span> 막힙니다. 매도는 전략이 그대로 판단합니다.</p>
+            </div>
+            <span class="font-data-mono text-xs text-on-surface-variant" id="veto-count"></span>
+          </div>
+          <div id="veto-list" class="flex flex-col gap-2"></div>
+        </div>
+
 
         <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
           <!-- Collapsed by default: this is a panel you read when something
@@ -561,6 +575,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=13"></script>
+<script src="/static/app.js?v=14"></script>
 </body>
 </html>

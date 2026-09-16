@@ -147,6 +147,9 @@ class Store:
                 "total_krw": to_decimal(doc.get("total_krw"), default=0),
                 "profit_krw": to_decimal(doc.get("profit_krw"), default=0),
                 "profit_rate": to_decimal(doc.get("profit_rate"), default=0),
+                # Carried so the benchmark can be given the same cash flows;
+                # a rise here is money that entered, not performance.
+                "purchase_krw": to_decimal(doc.get("purchase_krw"), default=0),
             }
             for doc in query.stream()
         ]
@@ -367,6 +370,33 @@ class Store:
                 continue
             active[doc.id] = data.get("reason") or data.get("category") or "AI 보류"
         return active
+
+    def vetoes(self, now=None):
+        """Every veto row, newest first, with the expired ones marked.
+
+        Separate from :meth:`active_vetoes`, which returns the ``{symbol:
+        reason}`` the risk gate reads and must keep returning exactly that.
+        This is the reader's view: a veto that blocks a buy should be
+        something a person can see and weigh, and that needs the evidence and
+        the expiry the gate has no use for.
+        """
+        now = (now or _clock()).isoformat()
+        rows = []
+        for doc in self.client.collection("universe_vetoes").stream():
+            data = doc.to_dict() or {}
+            expires_at = data.get("expires_at")
+            rows.append(
+                {
+                    "symbol": doc.id,
+                    "reason": data.get("reason") or data.get("category") or "AI 보류",
+                    "evidence": data.get("evidence"),
+                    "ts": data.get("ts"),
+                    "expires_at": expires_at,
+                    "active": not (expires_at and expires_at <= now),
+                }
+            )
+        rows.sort(key=lambda row: (not row["active"], row["ts"] or ""), reverse=False)
+        return rows
 
     def clear_veto(self, symbol):
         """Lift one veto immediately, without waiting for it to expire."""

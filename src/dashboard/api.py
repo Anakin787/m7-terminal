@@ -95,6 +95,23 @@ def audit(
     return get_service().audit(limit=limit, category=category, offset=offset)
 
 
+@app.get("/api/vetoes")
+def vetoes():
+    """AI buy-holds currently in force."""
+    return get_service().vetoes()
+
+
+@app.delete("/api/vetoes/{symbol}")
+def clear_veto(symbol: str = Path(pattern=r"^[A-Za-z0-9.\-]{1,20}$")):
+    """Lift one AI buy-hold.
+
+    A write, like the kill switch - and like it, one that can only ever make
+    the engine *less* restricted in a way a person chose deliberately. It
+    cannot place an order, and it is audited.
+    """
+    return get_service().clear_veto(symbol)
+
+
 @app.get("/api/trading/status")
 def trading_status():
     return get_service().trading_status()

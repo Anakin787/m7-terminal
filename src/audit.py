@@ -353,6 +353,27 @@ def review_entries(review, actor="AI universe review", detected_at=None):
     return entries
 
 
+def veto_cleared_entry(symbol, reason=None, actor=None, detected_at=None):
+    """One audit row for a human lifting an AI veto.
+
+    Audited for the same reason the kill switch is: a veto blocks buys the
+    strategy wanted to make, so lifting one changes what the engine may do
+    next. The act is the write, so ``changed_at`` equals ``detected_at``.
+    """
+    detected_at = detected_at or datetime.now().isoformat()
+    return {
+        "detected_at": detected_at,
+        "changed_at": detected_at,
+        "changed_by_method": "direct",
+        "actor_kind": ACTOR_HUMAN,
+        "actor": actor or local_actor(),
+        "source": "dashboard",
+        "category": "veto",
+        "summary": f"{symbol} 매수 보류 해제" + (f" (사유: {reason})" if reason else ""),
+        "changes": [{"target": symbol, "before": "보류", "after": "해제"}],
+    }
+
+
 def kill_switch_entry(state, active, actor=None, detected_at=None):
     """One audit row for a kill-switch flip, written by whoever flipped it.
 

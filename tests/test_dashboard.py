@@ -749,3 +749,142 @@ def test_the_endpoint_refuses_a_range_it_does_not_know(client):
 
 def test_the_endpoint_refuses_a_symbol_shaped_like_a_path(client):
     assert client.get("/api/holdings/..%2Fetc/bars").status_code in (404, 422)
+
+
+# ------------------------------------------------------------- AI vetoes
+
+
+def seed_veto(service, symbol="IONQ", expires_at="2099-01-01T00:00:00", **extra):
+    fields = {"reason": "인수합병 이슈", "evidence": "헤드라인",
+              "ts": "2026-09-15T10:00:00", "expires_at": expires_at}
+    fields.update(extra)
+    service.store.client.collection("universe_vetoes").document(symbol).set(fields)
+
+
+def test_vetoes_are_listed_with_what_a_person_needs_to_weigh_them(service):
+    seed_veto(service)
+
+    data = service.vetoes()
+
+    [row] = data["vetoes"]
+    assert data["active_count"] == 1
+    assert (row["symbol"], row["active"]) == ("IONQ", True)
+    # The gate only ever needed the reason; a reader needs the evidence too.
+    assert row["evidence"] == "헤드라인"
+
+
+def test_an_expired_veto_is_shown_but_not_counted(service):
+    seed_veto(service, expires_at="2020-01-01T00:00:00")
+
+    data = service.vetoes()
+
+    assert data["active_count"] == 0
+    assert data["vetoes"][0]["active"] is False
+
+
+def test_clearing_a_veto_removes_it_and_leaves_an_audit_trail(service):
+    seed_veto(service)
+
+    assert service.clear_veto("ionq") == {"symbol": "IONQ", "cleared": True}
+
+    assert service.vetoes()["vetoes"] == []
+    entry = service.store.audit_page(limit=5)["entries"][0]
+    assert entry["category"] == "veto"
+    assert "IONQ" in entry["summary"]
+
+
+def test_clearing_a_veto_that_is_not_there_is_not_an_error(service):
+    assert service.clear_veto("NOPE") == {"symbol": "NOPE", "cleared": False}
+    assert service.store.audit_page(limit=5)["entries"] == []
+
+
+# -------------------------------------------------------- benchmark series
+
+
+def seed_snapshots(service, rows):
+    """rows: [(ts, total_krw, purchase_krw)]"""
+    for ts, total, purchase in rows:
+        service.store.client.collection("snapshots").document(ts).set(
+            {"ts": ts, "total_krw": str(total), "purchase_krw": str(purchase),
+             "profit_krw": "0", "profit_rate": "0"}
+        )
+
+
+def bench_service(service, closes):
+    service._loader = StubBarLoader({"QQQ": bars("QQQ", closes, start=date(2026, 9, 1))})
+    return service
+
+
+def test_the_benchmark_starts_from_the_accounts_own_value(service):
+    """Same starting money, so the two lines are comparable from the first point."""
+    seed_snapshots(service, [
+        ("2026-09-01T10:00:00", 1000, 1000),
+        ("2026-09-02T10:00:00", 1100, 1000),
+        ("2026-09-03T10:00:00", 1200, 1000),
+    ])
+    bench_service(service, ["100", "110", "120"])
+
+    bench = service.history("3M")["benchmark"]
+
+    assert bench["symbol"] == "QQQ"
+    assert bench["points"][0]["total_krw"] == 1000.0
+    assert bench["points"][-1]["total_krw"] == 1200.0
+    assert bench["return"] == pytest.approx(0.2)
+    assert bench["mine_return"] == pytest.approx(0.2)
+
+
+def test_money_that_enters_the_account_enters_the_benchmark_too(service):
+    """The whole reason this is not a single rebase at the window start.
+
+    Cost basis rises by 1000 on day two - money arriving, not performance.
+    A benchmark that did not receive it would read the deposit as the account
+    beating the market by 100%.
+    """
+    seed_snapshots(service, [
+        ("2026-09-01T10:00:00", 1000, 1000),
+        ("2026-09-02T10:00:00", 2000, 2000),
+        ("2026-09-03T10:00:00", 2000, 2000),
+    ])
+    bench_service(service, ["100", "100", "100"])
+
+    bench = service.history("3M")["benchmark"]
+
+    assert bench["points"][-1]["total_krw"] == 2000.0
+    assert bench["return"] == pytest.approx(1.0)
+    assert bench["mine_return"] == pytest.approx(1.0)   # neither one "won"
+
+
+def test_a_sale_does_not_sell_the_benchmark_back(service):
+    """A falling cost basis is usually a reallocation, not money leaving."""
+    seed_snapshots(service, [
+        ("2026-09-01T10:00:00", 1000, 1000),
+        ("2026-09-02T10:00:00", 1000, 400),
+        ("2026-09-03T10:00:00", 1000, 400),
+    ])
+    bench_service(service, ["100", "100", "100"])
+
+    bench = service.history("3M")["benchmark"]
+
+    assert bench["points"][-1]["total_krw"] == 1000.0
+
+
+def test_a_snapshot_on_a_day_the_market_was_shut_uses_the_last_close(service):
+    """Snapshots land on weekends; the exchange does not."""
+    seed_snapshots(service, [
+        ("2026-09-01T10:00:00", 1000, 1000),
+        ("2026-09-02T10:00:00", 1000, 1000),
+        ("2026-09-09T10:00:00", 1000, 1000),   # far past the last bar
+    ])
+    bench_service(service, ["100", "110"])     # bars only for the 1st and 2nd
+
+    bench = service.history("3M")["benchmark"]
+
+    assert len(bench["points"]) == 3
+    assert bench["points"][-1]["total_krw"] == bench["points"][-2]["total_krw"]
+
+
+def test_too_few_snapshots_draw_no_comparison_at_all(service):
+    seed_snapshots(service, [("2026-09-01T10:00:00", 1000, 1000)])
+    bench_service(service, ["100"])
+
+    assert service.history("3M")["benchmark"] is None
