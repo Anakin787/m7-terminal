@@ -57,7 +57,7 @@ function savePageSize(key, size) {
 const state = { view: "overview", range: "3M", allocBy: "market", history: null,
                 editingName: false, auditCategory: "", trading: null, health: null,
                 engineOpen: false, auditPage: 0, reportsPage: 0,
-                hcSymbol: null, hcRange: "3M",
+                hcSymbol: null, hcRange: "3M", hcData: null,
                 auditSize: loadPageSize("m7.auditPageSize", AUDIT_PAGE_SIZE),
                 reportsSize: loadPageSize("m7.reportsPageSize", REPORTS_PAGE_SIZE) };
 
@@ -127,6 +127,29 @@ function plainText(value) {
     .replace(/`([^`]*)`/g, "$1")                      // inline code
     .replace(/\s+/g, " ")
     .trim();
+}
+
+/** Redraw a chart whenever its container's box changes.
+ *
+ * Falls back to the window resize event where ResizeObserver is missing,
+ * which is the case this replaced - narrower, but better than nothing.
+ */
+function watchChartBox(hostId, redraw) {
+  const host = $(hostId);
+  if (!host) return;
+  if (typeof ResizeObserver === "undefined") {
+    window.addEventListener("resize", redraw);
+    return;
+  }
+  let last = "";
+  new ResizeObserver(() => {
+    // A zero box is a hidden section, not a size to draw against; and an
+    // unchanged one would redraw on every scroll-driven reflow.
+    const size = `${Math.round(host.clientWidth)}x${Math.round(host.clientHeight)}`;
+    if (size === last || host.clientWidth === 0) return;
+    last = size;
+    redraw();
+  }).observe(host);
 }
 
 async function getJSON(url) {
@@ -460,7 +483,7 @@ function renderChart(data) {
     <line id="crosshair" y1="${pad.top}" y2="${pad.top + innerH}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <line id="crosshair-h" x1="${pad.left}" x2="${W - pad.right}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <circle id="cursor-dot" r="4.5" fill="${COLORS.primary}" stroke="#171f33" stroke-width="2" style="display:none"/>
-    <rect id="chart-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent"/>`;
+    <rect id="chart-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent" pointer-events="all"/>`;
 
   attachHover(svg, points, x, y, pad, innerH);
 }
@@ -507,10 +530,33 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
   const tooltip = $(options.tooltip || "tooltip");
   const host = $(options.host || "chart-host");
 
+  // Screen <-> viewBox conversion is the browser's own, not arithmetic of
+  // ours. The old version divided the viewBox width by the element's width,
+  // which is only the right answer while the two have the same aspect ratio -
+  // and they stop having it the moment the box changes without a redraw. The
+  // matrix accounts for letterboxing, page zoom and any transform above, so
+  // the cursor lands where the reader is pointing whatever else moved.
+  const toLocal = (event) => {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = event.clientX;
+    pt.y = event.clientY;
+    return pt.matrixTransform(ctm.inverse());
+  };
+  const toScreen = (vx, vy) => {
+    const ctm = svg.getScreenCTM();
+    if (!ctm) return null;
+    const pt = svg.createSVGPoint();
+    pt.x = vx;
+    pt.y = vy;
+    return pt.matrixTransform(ctm);
+  };
+
   hit.addEventListener("mousemove", (event) => {
-    const box = svg.getBoundingClientRect();
-    const scale = svg.viewBox.baseVal.width / box.width;
-    const px = (event.clientX - box.left) * scale;
+    const local = toLocal(event);
+    if (!local) return;
+    const px = local.x;
 
     let nearest = 0;
     let best = Infinity;
@@ -535,10 +581,15 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
     tooltip.innerHTML = describe(point);
     tooltip.hidden = false;
 
-    const left = (cx / scale) + 14;
+    // Placed from the same matrix, so the label follows the dot rather than
+    // drifting away from it when the two scales disagree.
+    const screen = toScreen(cx, cy);
+    const hostBox = host.getBoundingClientRect();
+    const left = (screen ? screen.x - hostBox.left : cx) + 14;
+    const top = (screen ? screen.y - hostBox.top : cy) - 20;
     const maxLeft = host.clientWidth - tooltip.offsetWidth - 8;
     tooltip.style.left = Math.min(left, maxLeft) + "px";
-    tooltip.style.top = Math.max(8, (cy / scale) - 20) + "px";
+    tooltip.style.top = Math.max(8, top) + "px";
   });
 
   hit.addEventListener("mouseleave", () => {
@@ -700,6 +751,7 @@ async function loadHoldingChart() {
   const data = await getJSON(
     `/api/holdings/${encodeURIComponent(symbol)}/bars?range=${state.hcRange}`);
   if (state.hcSymbol !== symbol) return;   // the reader moved on while we waited
+  state.hcData = data;
   renderHoldingChart(data);
 }
 
@@ -786,7 +838,7 @@ function renderHoldingChart(data) {
     <line id="hc-crosshair" y1="${pad.top}" y2="${pad.top + innerH}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <line id="hc-crosshair-h" x1="${pad.left}" x2="${W - pad.right}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <circle id="hc-dot" r="4.5" fill="${stroke}" stroke="#171f33" stroke-width="2" style="display:none"/>
-    <rect id="hc-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent"/>`;
+    <rect id="hc-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent" pointer-events="all"/>`;
 
   attachHover(svg, points, x, y, pad, innerH, {
     valueOf: (p) => p.close,
@@ -1812,7 +1864,19 @@ function init() {
 
   // The server caches upstream calls, so polling here costs nothing at Toss.
   setInterval(refresh, 15000);
-  window.addEventListener("resize", () => { if (state.history) renderChart(state.history); });
+  // Redrawn when the *box* changes, not when the window does.
+  //
+  // viewBox is baked from the host's size at render time, and the only thing
+  // that used to redraw was a window resize - so anything else that changed
+  // the box left the viewBox behind. Two things do: the allocation card grows
+  // when By Plan is picked, and the grid stretches the chart beside it to
+  // match; and a chart first drawn while its section is hidden measures 0 and
+  // falls back to 800x320. Either way the SVG then letterboxes against a
+  // stale viewBox, and the hover maths - which assumes uniform scaling with
+  // no bands - starts pointing somewhere other than the cursor. The crosshair
+  // and tooltip simply stopped appearing.
+  watchChartBox("chart-host", () => state.history && renderChart(state.history));
+  watchChartBox("hc-host", () => state.hcData && renderHoldingChart(state.hcData));
 }
 
 document.addEventListener("DOMContentLoaded", init);
