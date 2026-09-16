@@ -250,7 +250,12 @@
                   <span class="text-xl font-bold text-on-surface" id="donut-value">—</span>
                 </div>
               </div>
-              <div class="w-full mt-6 space-y-2" id="alloc-legend"></div>
+              <!-- Sized to the tallest tab. The three groupings produce one
+                   row (By Market, By Currency) or four (By Plan: three
+                   buckets plus what the plan does not cover), and the grid
+                   stretches both cards to the taller one - so switching tab
+                   was resizing the chart beside it. -->
+              <div class="w-full mt-6 space-y-2 min-h-[7rem]" id="alloc-legend"></div>
             </div>
           </div>
         </div>
@@ -575,6 +580,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=14"></script>
+<script src="/static/app.js?v=15"></script>
 </body>
 </html>

@@ -458,6 +458,7 @@ function renderChart(data) {
     <text x="${pad.left}" y="${H - 8}" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${firstLabel}</text>
     <text x="${W - pad.right}" y="${H - 8}" text-anchor="end" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${lastLabel}</text>
     <line id="crosshair" y1="${pad.top}" y2="${pad.top + innerH}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
+    <line id="crosshair-h" x1="${pad.left}" x2="${W - pad.right}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <circle id="cursor-dot" r="4.5" fill="${COLORS.primary}" stroke="#171f33" stroke-width="2" style="display:none"/>
     <rect id="chart-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent"/>`;
 
@@ -499,6 +500,9 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
 
   const hit = svg.querySelector(options.hitId || "#chart-hit");
   const crosshair = svg.querySelector(options.crosshairId || "#crosshair");
+  // The horizontal half. Vertical alone answers "which day"; the pair also
+  // answers "what value", by pointing straight at the axis label for it.
+  const crosshairH = svg.querySelector(options.crosshairHId || "#crosshair-h");
   const dot = svg.querySelector(options.dotId || "#cursor-dot");
   const tooltip = $(options.tooltip || "tooltip");
   const host = $(options.host || "chart-host");
@@ -521,6 +525,10 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
 
     crosshair.setAttribute("x1", cx); crosshair.setAttribute("x2", cx);
     crosshair.style.display = "";
+    if (crosshairH) {
+      crosshairH.setAttribute("y1", cy); crosshairH.setAttribute("y2", cy);
+      crosshairH.style.display = "";
+    }
     dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
     dot.style.display = "";
 
@@ -535,6 +543,7 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
 
   hit.addEventListener("mouseleave", () => {
     crosshair.style.display = "none";
+    if (crosshairH) crosshairH.style.display = "none";
     dot.style.display = "none";
     tooltip.hidden = true;
   });
@@ -775,6 +784,7 @@ function renderHoldingChart(data) {
     <text x="${pad.left}" y="${H - 8}" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${points[0].date}</text>
     <text x="${W - pad.right}" y="${H - 8}" text-anchor="end" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${points[points.length - 1].date}</text>
     <line id="hc-crosshair" y1="${pad.top}" y2="${pad.top + innerH}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
+    <line id="hc-crosshair-h" x1="${pad.left}" x2="${W - pad.right}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
     <circle id="hc-dot" r="4.5" fill="${stroke}" stroke="#171f33" stroke-width="2" style="display:none"/>
     <rect id="hc-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent"/>`;
 
@@ -788,6 +798,7 @@ function renderHoldingChart(data) {
           `<div class="${diff >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim"}">평단 대비 ${fmtPct(diff)}</div>`);
     },
     hitId: "#hc-hit", crosshairId: "#hc-crosshair", dotId: "#hc-dot",
+    crosshairHId: "#hc-crosshair-h",
     tooltip: "hc-tooltip", host: "hc-host",
   });
 }
