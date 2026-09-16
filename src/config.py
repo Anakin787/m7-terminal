@@ -231,6 +231,21 @@ class TradingConfig:
     #: business, the same way its module path is.
     strategy_params: dict = field(default_factory=dict)
 
+    #: ``{symbol: quantity}`` the engine must act as if it does not hold.
+    #:
+    #: Shares bought by hand, for reasons the strategy knows nothing about.
+    #: Without this the engine reads them as its own: it counts them toward
+    #: its target and stops buying, and - the part that costs money - a
+    #: rotation exit sells the whole position, because ``exit_fraction`` is a
+    #: fraction of what the account holds, not of what the strategy bought.
+    #: Neither the AI veto nor the risk gate would stop that; a veto blocks
+    #: buys only, by design.
+    #:
+    #: Distinct from ``portfolio.manual``, which is holdings at *other*
+    #: brokers and exists for reporting. These are real Toss holdings, fully
+    #: reported, that the trading engine alone is blind to.
+    excluded_holdings: dict = field(default_factory=dict)
+
     #: How far out an OCO bracket's expireDate is set, once an entry fills.
     #: Toss requires an expiry (design 2.3); this is not a trading decision,
     #: just how long the exit order is allowed to keep watching.
@@ -468,6 +483,22 @@ def _parse_trading(raw_trading):
             f"'trading.oco_expire_days' 값을 정수로 읽을 수 없습니다: {oco_expire_days!r}"
         ) from None
 
+    excluded_holdings = {}
+    for symbol, quantity in (raw_trading.get("excluded_holdings") or {}).items():
+        symbol = str(symbol).strip().upper()
+        if not symbol:
+            continue
+        # Refused rather than skipped. A typo here does not fail loudly on its
+        # own - the engine simply resumes managing shares the operator thinks
+        # are protected, and the first sign is a sell that should never have
+        # happened.
+        value = _decimal(quantity, f"trading.excluded_holdings.{symbol}")
+        if value <= 0:
+            raise TossConfigError(
+                f"'trading.excluded_holdings.{symbol}' 수량은 0보다 커야 합니다: {quantity!r}"
+            )
+        excluded_holdings[symbol] = value
+
     return TradingConfig(
         enabled=bool(raw_trading.get("enabled", False)),
         kill_switch_path=raw_trading.get("kill_switch_path")
@@ -476,6 +507,7 @@ def _parse_trading(raw_trading):
         limits=limits,
         universe=universe_rows,
         strategy_params=raw_trading.get("strategy_params") or {},
+        excluded_holdings=excluded_holdings,
         oco_expire_days=oco_expire_days,
         oco_stop_loss_slippage=_decimal(
             raw_trading.get("oco_stop_loss_slippage", "0.005"), "trading.oco_stop_loss_slippage"

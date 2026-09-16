@@ -11,10 +11,11 @@ risk gate in strict mode reads an absent field as "cannot verify" and
 rejects. A failed read must never widen what is permitted.
 """
 
+from dataclasses import replace
 from datetime import datetime
 
 from src.execution.risk import kill_switch_active
-from src.models import to_decimal
+from src.models import ZERO, to_decimal
 from src.strategy.base import MarketSession, StrategyContext, session_date_of
 from src.toss.calendar import live_session, regular_window
 from src.toss.errors import TossError
@@ -45,6 +46,7 @@ def build_context(
     snapshot=None,
     history=None,
     recent=(),
+    excluded_holdings=None,
 ):
     """Assemble the context a strategy and the risk gate both read.
 
@@ -52,6 +54,14 @@ def build_context(
     trading run reads the portfolio exactly the way the report does - and
     through the same cached OAuth token, which matters because Toss allows
     one valid token per client.
+
+    ``excluded_holdings`` is ``{symbol: quantity}`` bought by hand, which the
+    engine has to be blind to. The subtraction happens *here* rather than in
+    a strategy because the risk gate reads the same context: reduce the
+    position in one place and the strategy stops counting those shares toward
+    its target, stops proposing to sell them, and the gate will not clear a
+    sell for them either. The snapshot itself is left whole - the report and
+    the dashboard should still show what the account actually holds.
     """
     # Aware, because the calendar hands back aware datetimes and the risk
     # gate compares now against a session close. Mixing the two raises
@@ -62,15 +72,16 @@ def build_context(
     if snapshot is None:
         snapshot = service.snapshot()
 
-    held = [p.symbol for p in snapshot.positions if p.symbol]
+    trading_positions = _less_excluded(snapshot.positions, excluded_holdings)
+    held = [p.symbol for p in trading_positions if p.symbol]
     wanted = list(dict.fromkeys([*held, *(symbols or [])]))
 
     return StrategyContext(
         now=now,
-        snapshot=snapshot,
+        snapshot=replace(snapshot, positions=trading_positions),
         prices=_prices(service, wanted),
         buying_power=_buying_power(snapshot),
-        sellable=_sellable(service, held),
+        sellable=_sellable(service, held, excluded_holdings),
         price_limits=_price_limits(service, wanted),
         sessions=_sessions(service, now),
         # Keyed on the session, not the clock: the limits are limits on a
@@ -134,12 +145,42 @@ def _buying_power(snapshot):
     return powers
 
 
-def _sellable(service, symbols):
+def _less_excluded(positions, excluded_holdings):
+    """``positions`` with the hand-bought shares taken out.
+
+    A symbol whose excluded quantity covers the whole holding disappears from
+    the trading view entirely, which is the point: a strategy cannot propose
+    to sell a position it cannot see.
+    """
+    excluded = excluded_holdings or {}
+    if not excluded:
+        return list(positions or [])
+
+    kept = []
+    for position in positions or []:
+        protected = excluded.get(position.symbol) if position.symbol else None
+        if protected is None:
+            kept.append(position)
+            continue
+        remaining = position.with_quantity(position.quantity - protected)
+        if remaining is not None:
+            kept.append(remaining)
+    return kept
+
+
+def _sellable(service, symbols, excluded_holdings=None):
     """One lookup per held symbol, cached in the context for the whole run.
 
     ORDER_INFO allows 6 requests a second and only 3 between 09:00 and 09:10,
     so this is read once rather than polled (design 2.4).
+
+    The excluded quantity comes off here too. Reducing the position alone
+    stops the strategy from *proposing* those shares; reducing what the
+    broker says is sellable is what stops an oversized sell from being
+    cleared if one is ever proposed anyway - the gate checks this figure, and
+    it should not be told the hand-bought shares are available.
     """
+    excluded = excluded_holdings or {}
     result = {}
     for symbol in symbols:
         try:
@@ -147,8 +188,12 @@ def _sellable(service, symbols):
         except TossError:
             continue
         value = _pick(raw, _SELLABLE_KEYS)
-        if value is not None:
-            result[symbol] = value
+        if value is None:
+            continue
+        protected = excluded.get(symbol)
+        if protected is not None:
+            value = max(value - protected, ZERO)
+        result[symbol] = value
     return result
 
 

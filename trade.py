@@ -185,6 +185,7 @@ def run(argv=None):
             kill_switch_path=config.trading.kill_switch_path,
             history=history,
             recent=store.recent_signals(limit=50),
+            excluded_holdings=config.trading.excluded_holdings,
         )
         if ctx.kill_switch:
             print("!!! KILL_SWITCH가 활성화되어 있습니다. 모든 신호가 거부됩니다.")

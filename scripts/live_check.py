@@ -226,6 +226,7 @@ def run(argv=None):
         symbols=[symbol],
         kill_switch_path=config.trading.kill_switch_path,
         history=history,
+        excluded_holdings=config.trading.excluded_holdings,
     )
     print(
         f"    세션 {ctx.session_date} · 보유 {len(ctx.positions)}종목 · "

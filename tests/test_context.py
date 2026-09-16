@@ -8,9 +8,9 @@ permitted. It leaves the field absent, and strict mode reads absent as
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
-from src.execution.context import build_context
+from src.execution.context import _less_excluded, build_context
 from src.execution.risk import RiskGate, RiskLimits
-from src.models import SOURCE_TOSS, PortfolioSnapshot, Position
+from src.models import ZERO, SOURCE_TOSS, PortfolioSnapshot, Position
 from src.store.repo import Store
 from src.strategy.bars import Bar, PriceHistory
 from src.strategy.base import SIDE_BUY, Signal
@@ -248,3 +248,111 @@ def test_one_quiet_feed_does_not_drag_the_session_back(tmp_path, firestore_clien
 def test_with_no_history_the_session_date_falls_back_to_today(tmp_path, firestore_client):
     """Every caller with no bars loaded keeps the behaviour it always had."""
     assert build(tmp_path, firestore_client).session_date == NOW.date()
+
+
+# ------------------------------------------------------ hand-bought holdings
+#
+# 2026-09-15: 13 IONQ shares bought by hand, and the first rebalance after
+# that proposed selling all 13 - momentum gone, so a rotation exit, and
+# exit_fraction is a fraction of what the *account* holds. The AI veto did not
+# stop it (vetoes block buys only) and the gate approved it, because Toss
+# reported the shares as sellable. Only PAPER mode kept it from happening.
+
+
+def held(symbol="IONQ", quantity="13", **overrides):
+    base = dict(
+        symbol=symbol,
+        name=symbol,
+        market_country="US",
+        currency="USD",
+        quantity=Decimal(quantity),
+        last_price=Decimal("38"),
+        avg_purchase_price=Decimal("40"),
+        source=SOURCE_TOSS,
+        market_value=Decimal("494"),
+    )
+    base.update(overrides)
+    return Position(**base)
+
+
+def test_an_excluded_holding_is_invisible_to_the_engine():
+    kept = _less_excluded([held()], {"IONQ": Decimal("13")})
+    assert kept == []
+
+
+def test_only_the_hand_bought_part_is_hidden():
+    """Shares the strategy accumulated itself stay its own to manage."""
+    [kept] = _less_excluded([held(quantity="18")], {"IONQ": Decimal("13")})
+
+    assert kept.quantity == Decimal("5")
+    # market_value is scaled, not carried over: evaluation prefers it to
+    # quantity x price, so an unscaled copy would report 18 shares' worth.
+    assert kept.evaluation < Decimal("494")
+
+
+def test_other_symbols_are_untouched():
+    kept = _less_excluded([held(), held("SHY", "4")], {"IONQ": Decimal("13")})
+    assert [(p.symbol, p.quantity) for p in kept] == [("SHY", Decimal("4"))]
+
+
+def test_no_exclusions_changes_nothing():
+    positions = [held(), held("SHY", "4")]
+    assert _less_excluded(positions, {}) == positions
+    assert _less_excluded(positions, None) == positions
+
+
+def test_excluding_more_than_is_held_leaves_nothing():
+    """Sold some by hand since: still nothing here for the engine."""
+    assert _less_excluded([held(quantity="5")], {"IONQ": Decimal("13")}) == []
+
+
+def _ctx_holding(tmp_path, firestore_client, snapshot, excluded):
+    return build_context(
+        FakeService(),
+        Store(firestore_client),
+        now=NOW,
+        kill_switch_path=str(tmp_path / "none"),
+        snapshot=snapshot,
+        excluded_holdings=excluded,
+    )
+
+
+def test_the_sellable_quantity_drops_by_the_excluded_shares(tmp_path, firestore_client):
+    """The gate's own backstop, so an oversized sell cannot clear either.
+
+    FakeAccount reports 10 sellable; 4 of them were bought by hand.
+    """
+    snapshot = PortfolioSnapshot(
+        positions=[held(quantity="10")],
+        exchange_rate=Decimal("1400"),
+        total_krw=Decimal("10000000"),
+    )
+
+    ctx = _ctx_holding(tmp_path, firestore_client, snapshot, {"IONQ": Decimal("4")})
+
+    assert ctx.sellable["IONQ"] == Decimal("6")
+    assert ctx.position("IONQ").quantity == Decimal("6")
+
+
+def test_sellable_never_goes_negative(tmp_path, firestore_client):
+    snapshot = PortfolioSnapshot(
+        positions=[held(quantity="10")],
+        exchange_rate=Decimal("1400"),
+        total_krw=Decimal("10000000"),
+    )
+
+    ctx = _ctx_holding(tmp_path, firestore_client, snapshot, {"IONQ": Decimal("99")})
+
+    assert ctx.sellable.get("IONQ", ZERO) == ZERO
+
+
+def test_the_snapshot_the_report_reads_is_left_whole(tmp_path, firestore_client):
+    """Blindness belongs to the engine, not to the books."""
+    snapshot = PortfolioSnapshot(
+        positions=[held()], exchange_rate=Decimal("1400"), total_krw=Decimal("10000000")
+    )
+
+    ctx = _ctx_holding(tmp_path, firestore_client, snapshot, {"IONQ": Decimal("13")})
+
+    assert ctx.position("IONQ") is None  # the engine sees nothing
+    assert [p.quantity for p in snapshot.positions] == [Decimal("13")]  # the books do

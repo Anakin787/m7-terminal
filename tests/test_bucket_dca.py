@@ -8,6 +8,7 @@ import pytest
 from src.models import SOURCE_TOSS, PortfolioSnapshot, Position
 from src.strategy.bars import Bar, PriceHistory
 from src.strategy.base import DailyUsage, SIDE_BUY, SIDE_SELL, StrategyContext
+from src.execution.context import _less_excluded
 from src.strategy.bucket_dca import MODE_ROTATION, BucketDcaParams, BucketDcaStrategy
 from src.strategy.universe import (
     BUCKET_CORE,
@@ -411,3 +412,46 @@ def test_cash_counts_toward_the_sizing_base():
     big = sum((s.amount for s in strategy().evaluate(rich) if s.side == SIDE_BUY), D("0"))
     small = sum((s.amount for s in strategy().evaluate(poor) if s.side == SIDE_BUY), D("0"))
     assert big > small
+
+
+# ------------------------------------------------- hand-bought shares are safe
+#
+# Reproduces 2026-09-15. IONQ was bought by hand; its momentum had gone, so
+# the week's rebalance proposed a rotation exit for the whole position -
+# exit_fraction is a fraction of what the account holds, not of what the
+# strategy bought. The AI veto did not stop it (vetoes block buys only), and
+# the risk gate approved it, because Toss reported the shares as sellable.
+
+
+def test_a_held_name_that_has_fallen_out_is_sold_in_full():
+    """The baseline: this is what happened, and what has to keep working."""
+    history = history_for({"AAA": "0.03", "BBB": "0.02", "DDD": "-0.02"})
+    ctx = context(
+        datetime(2025, 3, 3, 10), history, positions=[position("DDD", quantity="13")]
+    )
+
+    sells = [s for s in strategy().evaluate(ctx) if s.side == SIDE_SELL]
+
+    assert [(s.symbol, s.quantity) for s in sells] == [("DDD", D("13"))]
+
+
+def test_excluding_the_holding_removes_the_sell_entirely():
+    """What the engine cannot see, it cannot propose to sell."""
+    history = history_for({"AAA": "0.03", "BBB": "0.02", "DDD": "-0.02"})
+    positions = _less_excluded([position("DDD", quantity="13")], {"DDD": D("13")})
+    ctx = context(datetime(2025, 3, 3, 10), history, positions=positions)
+
+    sells = [s for s in strategy().evaluate(ctx) if s.side == SIDE_SELL]
+
+    assert "DDD" not in {s.symbol for s in sells}
+
+
+def test_only_the_strategys_own_shares_are_ever_sold():
+    """Bought 13 by hand, the strategy accumulated 5: it may sell the 5."""
+    history = history_for({"AAA": "0.03", "BBB": "0.02", "DDD": "-0.02"})
+    positions = _less_excluded([position("DDD", quantity="18")], {"DDD": D("13")})
+    ctx = context(datetime(2025, 3, 3, 10), history, positions=positions)
+
+    sells = [s for s in strategy().evaluate(ctx) if s.side == SIDE_SELL]
+
+    assert [(s.symbol, s.quantity) for s in sells] == [("DDD", D("5"))]

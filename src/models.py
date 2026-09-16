@@ -5,7 +5,7 @@ the boundary - rather than float - keeps won-level sums exact and removes the
 rounding drift the previous yfinance-based implementation carried.
 """
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from decimal import Decimal, InvalidOperation
 
 ZERO = Decimal("0")
@@ -133,6 +133,38 @@ class Position:
         if self.purchase_amount is not None:
             return self.purchase_amount
         return self.quantity * self.avg_purchase_price
+
+    def with_quantity(self, quantity):
+        """This holding as if it were only ``quantity`` shares.
+
+        Every absolute figure is scaled by the same ratio; the rates are left
+        alone, being ratios already. ``market_value`` in particular has to be
+        scaled rather than dropped: ``evaluation`` prefers it over
+        quantity times price, so a copy with a smaller quantity and the
+        original market value would report the full holding's worth under a
+        fraction of its shares.
+
+        Returns None when nothing is left, so a caller can drop the position
+        entirely rather than carry a zero-share one.
+        """
+        quantity = to_decimal(quantity, default=ZERO) or ZERO
+        if quantity <= ZERO:
+            return None
+        if self.quantity <= ZERO or quantity >= self.quantity:
+            return self
+
+        ratio = quantity / self.quantity
+        scaled = {
+            field: (value * ratio if value is not None else None)
+            for field, value in (
+                ("market_value", self.market_value),
+                ("purchase_amount", self.purchase_amount),
+                ("profit_loss", self.profit_loss),
+                ("profit_loss_after_cost", self.profit_loss_after_cost),
+                ("daily_profit_loss", self.daily_profit_loss),
+            )
+        }
+        return replace(self, quantity=quantity, **scaled)
 
 
 @dataclass

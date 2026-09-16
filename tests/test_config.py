@@ -520,3 +520,55 @@ def test_nothing_openable_returns_none_rather_than_a_guess(tmp_path):
     from src.config import resolve_service_account
 
     assert resolve_service_account("/nope/missing.json", root=str(tmp_path)) is None
+
+
+# ---------------------------------------------- holdings the engine ignores
+
+
+def _trading(tmp_path, body):
+    return load_config(write_config(tmp_path, body), load_env=False).trading
+
+
+def test_excluded_holdings_are_read_as_quantities(tmp_path):
+    trading = _trading(
+        tmp_path,
+        """
+        trading:
+          excluded_holdings:
+            ionq: 13
+        """,
+    )
+    # Upper-cased, because every other symbol in the system is.
+    assert trading.excluded_holdings == {"IONQ": Decimal("13")}
+
+
+def test_excluded_holdings_default_to_none_at_all(tmp_path):
+    assert _trading(tmp_path, "trading:\n  enabled: false\n").excluded_holdings == {}
+
+
+@pytest.mark.parametrize("quantity", ["0", "-1"])
+def test_a_meaningless_excluded_quantity_is_refused(tmp_path, quantity):
+    """A typo here would otherwise fail silently: the engine simply resumes
+    managing shares the operator believes are protected, and the first sign
+    of it is a sell that should never have happened."""
+    with pytest.raises(TossConfigError):
+        _trading(
+            tmp_path,
+            f"""
+            trading:
+              excluded_holdings:
+                IONQ: {quantity}
+            """,
+        )
+
+
+def test_an_unreadable_excluded_quantity_is_refused(tmp_path):
+    with pytest.raises(TossConfigError):
+        _trading(
+            tmp_path,
+            """
+            trading:
+              excluded_holdings:
+                IONQ: "열셋"
+            """,
+        )
