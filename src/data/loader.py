@@ -107,24 +107,45 @@ class HistoryLoader:
             )
 
         cutoff = self.session_cutoff()
+        start, end = as_date(start), as_date(end)
         added = {}
         for symbol in symbols:
-            first, last = self.cache.coverage(symbol)
-            fetch_start = as_date(start)
-            if last is not None:
-                # Already covered through the last session the exchange has
-                # finished - there is nothing yet to fetch.
-                if last >= cutoff:
-                    added[symbol] = 0
+            count = 0
+            for fetch_start, fetch_end in self._gaps(symbol, start, end, cutoff):
+                try:
+                    history = self.source.fetch(symbol, fetch_start, fetch_end)
+                except DataUnavailableError:
                     continue
-                fetch_start = last + timedelta(days=1)
-
-            try:
-                history = self.source.fetch(symbol, fetch_start, as_date(end))
-            except DataUnavailableError:
-                added[symbol] = 0
-                continue
-
-            count = self.cache.upsert(symbol, history.bars, self.source.name)
+                count += self.cache.upsert(symbol, history.bars, self.source.name)
             added[symbol] = count
         return added
+
+    def _gaps(self, symbol, start, end, cutoff):
+        """The ranges to fetch for one symbol: what the cache is missing.
+
+        Two of them, either of which can be empty.
+
+        *The tail*, measured against the **exchange** rather than against
+        ``end``: a symbol is refetched whenever the cache stops short of the
+        last closed session. See :meth:`refresh` for why that is not a
+        tolerance in days.
+
+        *The head*, when the cache starts later than the caller asked for.
+        Without it a series is only ever as long as the first window anyone
+        requested, and nothing says so: the dashboard's previous-close lookup
+        asks for twelve days, so a holding it had touched showed twelve days
+        of chart however long a range the reader picked. A symbol that simply
+        did not exist that early costs one fetch that returns nothing, on
+        every call that asks - the same price already paid for not carrying a
+        holiday calendar, and paid in requests rather than in correctness.
+        """
+        first, last = self.cache.coverage(symbol)
+        if first is None:
+            return [(start, end)]
+
+        gaps = []
+        if start < first:
+            gaps.append((start, first - timedelta(days=1)))
+        if last < cutoff:
+            gaps.append((last + timedelta(days=1), end))
+        return gaps

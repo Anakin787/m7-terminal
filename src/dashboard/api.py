@@ -62,6 +62,15 @@ def rename_holding(
     return {"symbol": symbol, "name": get_service().rename_symbol(symbol, name)}
 
 
+@app.get("/api/holdings/{symbol}/bars")
+def holding_bars(
+    symbol: str = Path(pattern=r"^[A-Za-z0-9.\-]{1,20}$"),
+    range: str = Query("3M", pattern="^(1M|3M|6M|1Y|ALL)$"),
+):
+    """Daily closes for one held symbol, with this account's average cost."""
+    return get_service().holding_bars(symbol, range)
+
+
 @app.get("/api/history")
 def history(range: str = Query("3M", pattern="^(1W|1M|3M|1Y|ALL)$")):
     return get_service().history(range)

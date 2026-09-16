@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from src.config import AnalystConfig, AppConfig, ManualHolding, NotionConfig, TossConfig
 from src.dashboard import api as dashboard_api
 from src.dashboard.service import DashboardService
+from datetime import date, timedelta
 from decimal import Decimal
 
 HOLDINGS = {
@@ -88,6 +89,8 @@ def service(firestore_client):
 
     svc._snapshot = _Cached(TTL_PORTFOLIO)
     svc._status = _Cached(TTL_MARKET_STATUS)
+    svc._bars = {}
+    svc._loader = None
     svc.last_sync = None
     svc.stub = stub
     yield svc
@@ -651,3 +654,98 @@ def test_allocation_by_bucket_reports_target_and_gap(bucket_plan, client):
 
 def test_allocation_rejects_a_grouping_it_does_not_know(client):
     assert client.get("/api/allocation?by=sector").status_code == 422
+
+
+# ---------------------------------------------------------- holding charts
+
+
+class StubBarLoader:
+    """Stands in for HistoryLoader, which would otherwise reach yfinance."""
+
+    def __init__(self, histories):
+        self.histories = histories
+        self.calls = []
+
+    def load(self, symbols, start, end):
+        self.calls.append((tuple(symbols), start, end))
+        return {s: self.histories[s] for s in symbols if s in self.histories}
+
+
+def bars(symbol, closes, start=date(2026, 9, 1)):
+    from src.strategy.bars import Bar, PriceHistory
+
+    rows = []
+    for i, close in enumerate(closes):
+        value = Decimal(str(close))
+        rows.append(
+            Bar(date=start + timedelta(days=i), open=value, high=value, low=value, close=value)
+        )
+    return PriceHistory(symbol, tuple(rows))
+
+
+@pytest.fixture
+def charted(service):
+    loader = StubBarLoader({"AAPL": bars("AAPL", ["170", "175", "180", "178"])})
+    service._loader = loader
+    return service, loader
+
+
+def test_a_holding_chart_carries_the_price_series_and_the_cost_line(charted):
+    service, _ = charted
+
+    data = service.holding_bars("AAPL", "3M")
+
+    assert [p["close"] for p in data["points"]] == [170.0, 175.0, 180.0, 178.0]
+    assert data["points"][0]["date"] == "2026-09-01"
+    # The average purchase price comes from the same snapshot the table
+    # renders, so the chart and the table can never disagree about it.
+    assert data["avg_price"] == 155.3
+    assert data["currency"] == "USD"
+    assert data["quantity"] == 10.0
+
+
+def test_the_symbol_is_normalised_before_it_reaches_the_loader(charted):
+    service, loader = charted
+
+    data = service.holding_bars(" aapl ", "3M")
+
+    assert data["symbol"] == "AAPL"
+    assert loader.calls[0][0] == ("AAPL",)
+
+
+def test_each_range_asks_for_its_own_window(charted):
+    service, loader = charted
+
+    service.holding_bars("AAPL", "1M")
+    service.holding_bars("AAPL", "1Y")
+
+    windows = [(end - start).days for _, start, end in loader.calls]
+    assert windows == [45, 400]
+
+
+def test_a_range_is_cached_separately_from_its_neighbours(charted):
+    service, loader = charted
+
+    service.holding_bars("AAPL", "3M")
+    service.holding_bars("AAPL", "3M")
+    service.holding_bars("AAPL", "1M")
+
+    # Two distinct windows, and the repeat served from cache.
+    assert len(loader.calls) == 2
+
+
+def test_a_symbol_with_no_bars_returns_an_empty_series(charted):
+    service, _ = charted
+
+    data = service.holding_bars("NOPE", "3M")
+
+    assert data["points"] == []
+    assert data["symbol"] == "NOPE"
+
+
+def test_the_endpoint_refuses_a_range_it_does_not_know(client):
+    assert client.get("/api/holdings/AAPL/bars?range=7Y").status_code == 422
+
+
+def test_the_endpoint_refuses_a_symbol_shaped_like_a_path(client):
+    assert client.get("/api/holdings/..%2Fetc/bars").status_code in (404, 422)

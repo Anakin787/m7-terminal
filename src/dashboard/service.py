@@ -29,6 +29,15 @@ TTL_FRESHNESS = 300
 #: at 09:00 - does not raise it, while a genuinely skipped run does.
 SNAPSHOT_STALE_HOURS = 26
 
+#: Daily bars change once a day, so a price series can be held far longer than
+#: the account data. The window is per symbol and per range.
+TTL_BARS = 900
+
+#: Calendar days to ask for, per range key. Generous against trading days:
+#: roughly 252 sessions a year, so a year's worth needs ~365 days of calendar
+#: to cover it, and asking wide costs nothing the cache does not absorb.
+BAR_RANGE_DAYS = {"1M": 45, "3M": 120, "6M": 240, "1Y": 400, "ALL": 2000}
+
 
 class _Cached:
     def __init__(self, ttl):
@@ -130,6 +139,10 @@ class DashboardService:
         )
         self._snapshot = _Cached(TTL_PORTFOLIO)
         self._status = _Cached(TTL_MARKET_STATUS)
+        #: One _Cached per (symbol, range). Bounded by how many symbols the
+        #: account holds, which is the same bound the holdings table has.
+        self._bars = {}
+        self._loader = None
         self.last_sync = None
 
     def _load_snapshot(self):
@@ -210,6 +223,72 @@ class DashboardService:
             )
         positions.sort(key=lambda item: item["value_krw"] or 0, reverse=True)
         return {"error": error, "positions": positions}
+
+    def holding_bars(self, symbol, range_key="3M"):
+        """Daily closes for one held symbol, with the cost line to read against.
+
+        The average purchase price is the point. A price chart of a ticker is
+        available anywhere; what is not is where *this* account bought it, and
+        a close above or below that line is the only question the holdings
+        table is really being asked. It comes from the same snapshot the table
+        renders, so the two can never disagree.
+
+        Bars come from the cache the previous-close lookup already fills
+        (``src/data/cache.py``), topped up from yfinance when short. Held
+        symbols are not necessarily in the strategy universe - TSLL and IONX
+        are not - so this cannot read the universe's bars and has to ask for
+        the symbol by name.
+        """
+        symbol = (symbol or "").strip().upper()
+        days = BAR_RANGE_DAYS.get(range_key, BAR_RANGE_DAYS["3M"])
+
+        cached = self._bars.setdefault((symbol, range_key), _Cached(TTL_BARS))
+        value, error = cached.get(lambda: self._load_bars(symbol, days))
+        if value is None:
+            return {"symbol": symbol, "range": range_key, "points": [], "error": error}
+
+        return {**value, "range": range_key, "error": error}
+
+    def _load_bars(self, symbol, days):
+        end = date.today()
+        histories = self._bar_loader().load([symbol], end - timedelta(days=days), end)
+        history = histories.get(symbol)
+        points = [
+            {"date": bar.date.isoformat(), "close": _num(bar.close)}
+            for bar in (history or ())
+        ]
+
+        position = self._position(symbol)
+        return {
+            "symbol": symbol,
+            "points": points,
+            "currency": position.currency if position else None,
+            "name": position.name if position else symbol,
+            "avg_price": _num(position.avg_purchase_price) if position else None,
+            "last_price": _num(position.last_price) if position else None,
+            "quantity": _num(position.quantity) if position else None,
+        }
+
+    def _position(self, symbol):
+        snapshot, _ = self.snapshot()
+        for position in getattr(snapshot, "positions", ()) or ():
+            if position.symbol == symbol:
+                return position
+        return None
+
+    def _bar_loader(self):
+        """The same loader the previous-close lookup uses, built once.
+
+        Imported lazily for the same reason it is there: importing this module
+        must not pull in yfinance or open the cache file.
+        """
+        if self._loader is None:
+            from src.data.cache import BarCache
+            from src.data.loader import HistoryLoader
+            from src.data.yahoo import YahooBarSource
+
+            self._loader = HistoryLoader(BarCache(), YahooBarSource())
+        return self._loader
 
     def history(self, range_key="3M"):
         rows = self.store.history(range_key)

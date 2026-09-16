@@ -57,6 +57,7 @@ function savePageSize(key, size) {
 const state = { view: "overview", range: "3M", allocBy: "market", history: null,
                 editingName: false, auditCategory: "", trading: null, health: null,
                 engineOpen: false, auditPage: 0, reportsPage: 0,
+                hcSymbol: null, hcRange: "3M",
                 auditSize: loadPageSize("m7.auditPageSize", AUDIT_PAGE_SIZE),
                 reportsSize: loadPageSize("m7.reportsPageSize", REPORTS_PAGE_SIZE) };
 
@@ -422,12 +423,25 @@ function renderChart(data) {
   attachHover(svg, points, x, y, pad, innerH);
 }
 
-function attachHover(svg, points, x, y, pad, innerH) {
-  const hit = svg.querySelector("#chart-hit");
-  const crosshair = svg.querySelector("#crosshair");
-  const dot = svg.querySelector("#cursor-dot");
-  const tooltip = $("tooltip");
-  const host = $("chart-host");
+/** Crosshair, dot and tooltip for a line chart.
+ *
+ * Shared by the portfolio chart and the per-holding price chart, which draw
+ * the same shape and differ only in what a point is worth (`valueOf`) and what
+ * the tooltip says about it (`describe`). The `ids` argument names the host
+ * and tooltip elements, since the two charts live on different views.
+ */
+function attachHover(svg, points, x, y, pad, innerH, options = {}) {
+  const valueOf = options.valueOf || ((p) => p.total_krw);
+  const describe = options.describe || ((p) =>
+    `<div class="text-on-surface-variant/70 mb-1">${p.ts.replace("T", " ").slice(0, 16)}</div>` +
+    `<div class="text-on-surface font-bold">${fmtInt(p.total_krw)} KRW</div>` +
+    `<div class="${p.profit_rate >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim"}">${fmtPct(p.profit_rate)}</div>`);
+
+  const hit = svg.querySelector(options.hitId || "#chart-hit");
+  const crosshair = svg.querySelector(options.crosshairId || "#crosshair");
+  const dot = svg.querySelector(options.dotId || "#cursor-dot");
+  const tooltip = $(options.tooltip || "tooltip");
+  const host = $(options.host || "chart-host");
 
   hit.addEventListener("mousemove", (event) => {
     const box = svg.getBoundingClientRect();
@@ -443,17 +457,14 @@ function attachHover(svg, points, x, y, pad, innerH) {
 
     const point = points[nearest];
     const cx = x(nearest);
-    const cy = y(point.total_krw);
+    const cy = y(valueOf(point));
 
     crosshair.setAttribute("x1", cx); crosshair.setAttribute("x2", cx);
     crosshair.style.display = "";
     dot.setAttribute("cx", cx); dot.setAttribute("cy", cy);
     dot.style.display = "";
 
-    tooltip.innerHTML =
-      `<div class="text-on-surface-variant/70 mb-1">${point.ts.replace("T", " ").slice(0, 16)}</div>` +
-      `<div class="text-on-surface font-bold">${fmtInt(point.total_krw)} KRW</div>` +
-      `<div class="${point.profit_rate >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim"}">${fmtPct(point.profit_rate)}</div>`;
+    tooltip.innerHTML = describe(point);
     tooltip.hidden = false;
 
     const left = (cx / scale) + 14;
@@ -550,6 +561,182 @@ function renderDonut(segments, legendSegments) {
   $("donut-value").textContent = (lead.share * 100).toFixed(0) + "%";
 }
 
+/* ------------------------------------------------- holding price chart */
+/* The average purchase price is the reason this chart exists. A price series
+ * for a ticker is available anywhere; where *this* account bought it is not,
+ * and whether the close sits above or below that line is the only question
+ * the holdings table is really being asked. So the cost line is drawn as a
+ * peer of the price line, not as an annotation. */
+
+async function loadHoldingChart() {
+  const symbol = state.hcSymbol;
+  if (!symbol) return;
+  const data = await getJSON(
+    `/api/holdings/${encodeURIComponent(symbol)}/bars?range=${state.hcRange}`);
+  if (state.hcSymbol !== symbol) return;   // the reader moved on while we waited
+  renderHoldingChart(data);
+}
+
+function renderHoldingChart(data) {
+  const svg = $("hc-chart");
+  const points = data.points || [];
+  const empty = $("hc-empty");
+  const currency = data.currency || "USD";
+
+  $("hc-title").textContent = data.name && data.name !== data.symbol
+    ? `${data.symbol} · ${data.name}` : data.symbol;
+
+  const avg = Number(data.avg_price) || 0;
+  const last = points.length ? points[points.length - 1].close : Number(data.last_price) || 0;
+  renderHoldingStats(data, avg, last, currency);
+
+  if (points.length < 3) {
+    svg.innerHTML = "";
+    empty.hidden = false;
+    $("hc-empty-title").textContent = data.error ? "시세를 불러오지 못했습니다" : "표시할 시세가 없습니다";
+    $("hc-empty-detail").textContent = data.error
+      ? String(data.error)
+      : `${data.symbol} 의 일봉이 ${points.length}개뿐입니다. 상장 직후이거나 시세 제공처에 없는 종목일 수 있습니다.`;
+    return;
+  }
+  empty.hidden = true;
+  $("hc-subtitle").textContent = `일봉 ${points.length}개 · 점선은 평균 매수가`;
+
+  const host = $("hc-host");
+  const W = host.clientWidth || 800;
+  const H = host.clientHeight || 300;
+  const pad = { top: 16, right: 16, bottom: 28, left: 58 };
+  const innerW = Math.max(1, W - pad.left - pad.right);
+  const innerH = Math.max(1, H - pad.top - pad.bottom);
+
+  // The cost line is inside the scale, not clipped off it: a holding far under
+  // water would otherwise draw its price and leave the line it is under
+  // somewhere off the top of the box, which is the one thing worth seeing.
+  const closes = points.map((p) => p.close);
+  let min = Math.min(...closes, avg > 0 ? avg : Infinity);
+  let max = Math.max(...closes, avg > 0 ? avg : -Infinity);
+  if (min === max) { min -= 1; max += 1; }
+  const span = max - min;
+  min -= span * 0.08;
+  max += span * 0.08;
+
+  const x = (i) => pad.left + (points.length === 1 ? innerW / 2 : (i / (points.length - 1)) * innerW);
+  const y = (v) => pad.top + innerH - ((v - min) / (max - min)) * innerH;
+
+  const up = avg > 0 ? last >= avg : true;
+  const stroke = up ? COLORS.positive : COLORS.negative;
+
+  const line = points.map((p, i) => `${i === 0 ? "M" : "L"}${x(i).toFixed(1)},${y(p.close).toFixed(1)}`).join(" ");
+  const area = `${line} L${x(points.length - 1).toFixed(1)},${pad.top + innerH} L${x(0).toFixed(1)},${pad.top + innerH} Z`;
+
+  let grid = "";
+  for (let i = 0; i <= 4; i++) {
+    const value = min + ((max - min) * i) / 4;
+    const gy = y(value);
+    grid += `<line x1="${pad.left}" y1="${gy}" x2="${W - pad.right}" y2="${gy}" stroke="${COLORS.ink}" stroke-opacity="0.08"/>`;
+    grid += `<text x="${pad.left - 8}" y="${gy + 4}" text-anchor="end" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${fmtPrice(value)}</text>`;
+  }
+
+  let costLine = "";
+  if (avg > 0 && avg >= min && avg <= max) {
+    const ay = y(avg);
+    costLine =
+      `<line x1="${pad.left}" y1="${ay}" x2="${W - pad.right}" y2="${ay}" stroke="${COLORS.warning}" stroke-opacity="0.85" stroke-width="1.5" stroke-dasharray="5 4"/>` +
+      `<text x="${W - pad.right - 4}" y="${ay - 5}" text-anchor="end" font-size="10" font-weight="bold" font-family="JetBrains Mono, monospace" fill="${COLORS.warning}">평단 ${fmtPrice(avg)}</text>`;
+  }
+
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+  svg.innerHTML = `
+    <defs><linearGradient id="hcFill" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0%" stop-color="${stroke}" stop-opacity="0.32"/>
+      <stop offset="100%" stop-color="${stroke}" stop-opacity="0"/>
+    </linearGradient></defs>
+    ${grid}
+    <path d="${area}" fill="url(#hcFill)"/>
+    <path d="${line}" fill="none" stroke="${stroke}" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    ${costLine}
+    <text x="${pad.left}" y="${H - 8}" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${points[0].date}</text>
+    <text x="${W - pad.right}" y="${H - 8}" text-anchor="end" font-size="10" font-family="JetBrains Mono, monospace" fill="${COLORS.inkMuted}" fill-opacity="0.6">${points[points.length - 1].date}</text>
+    <line id="hc-crosshair" y1="${pad.top}" y2="${pad.top + innerH}" stroke="${COLORS.ink}" stroke-opacity="0.3" stroke-dasharray="3 3" style="display:none"/>
+    <circle id="hc-dot" r="4.5" fill="${stroke}" stroke="#171f33" stroke-width="2" style="display:none"/>
+    <rect id="hc-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent"/>`;
+
+  attachHover(svg, points, x, y, pad, innerH, {
+    valueOf: (p) => p.close,
+    describe: (p) => {
+      const diff = avg > 0 ? (p.close - avg) / avg : null;
+      return `<div class="text-on-surface-variant/70 mb-1">${p.date}</div>` +
+        `<div class="text-on-surface font-bold">${fmtPrice(p.close)} ${currency}</div>` +
+        (diff === null ? "" :
+          `<div class="${diff >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim"}">평단 대비 ${fmtPct(diff)}</div>`);
+    },
+    hitId: "#hc-hit", crosshairId: "#hc-crosshair", dotId: "#hc-dot",
+    tooltip: "hc-tooltip", host: "hc-host",
+  });
+}
+
+function renderHoldingStats(data, avg, last, currency) {
+  const diff = avg > 0 ? (last - avg) / avg : null;
+  const quantity = Number(data.quantity) || 0;
+  const cells = [
+    ["현재가", `${fmtPrice(last)} ${currency}`, ""],
+    ["평균 매수가", avg > 0 ? `${fmtPrice(avg)} ${currency}` : "—", ""],
+    ["평단 대비", diff === null ? "—" : fmtPct(diff),
+      diff === null ? "" : diff >= 0 ? "text-secondary-fixed-dim" : "text-tertiary-fixed-dim"],
+    ["보유", quantity ? `${fmtQty(quantity)}주` : "—", ""],
+  ];
+  $("hc-stats").innerHTML = cells.map(([label, value, cls]) =>
+    `<div><span class="text-on-surface-variant/60">${label}</span> ` +
+    `<span class="font-bold ${cls || "text-on-surface"}">${value}</span></div>`).join("");
+}
+
+/** Prices span cents to thousands, so the precision follows the magnitude. */
+function fmtPrice(value) {
+  const abs = Math.abs(value);
+  const digits = abs >= 1000 ? 0 : abs >= 10 ? 2 : 4;
+  return value.toLocaleString("en-US", { minimumFractionDigits: digits, maximumFractionDigits: digits });
+}
+
+function fmtQty(value) {
+  return Number.isInteger(value) ? String(value)
+    : value.toLocaleString("en-US", { maximumFractionDigits: 4 });
+}
+
+function renderHoldingPicker(positions) {
+  const host = $("hc-symbols");
+  const withSymbol = positions.filter((p) => p.symbol);
+  if (!withSymbol.length) { host.innerHTML = ""; return; }
+
+  if (!state.hcSymbol || !withSymbol.some((p) => p.symbol === state.hcSymbol)) {
+    state.hcSymbol = withSymbol[0].symbol;   // largest holding: the list is value-sorted
+  }
+
+  host.innerHTML = withSymbol.map((p) => {
+    const active = p.symbol === state.hcSymbol;
+    return `<button data-hc-symbol="${p.symbol}" class="px-2.5 py-1 rounded text-[11px] font-data-mono font-bold border transition-colors ${
+      active ? "bg-surface border-outline-variant/50 text-on-surface shadow-sm"
+             : "bg-transparent border-outline-variant/25 text-on-surface-variant hover:text-on-surface"}">${p.symbol}</button>`;
+  }).join("");
+
+  host.querySelectorAll("[data-hc-symbol]").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.hcSymbol = button.dataset.hcSymbol;
+      renderHoldingPicker(positions);
+      $("hc-subtitle").textContent = "불러오는 중...";
+      loadHoldingChart().catch((err) => showError(String(err)));
+    });
+  });
+}
+
+function styleHoldingRangeButtons() {
+  document.querySelectorAll(".hc-range-btn").forEach((button) => {
+    const active = button.dataset.hcRange === state.hcRange;
+    button.className = "hc-range-btn px-2.5 py-1 text-[11px] font-data-mono font-bold rounded transition-colors " +
+      (active ? "bg-surface border border-outline-variant/50 text-on-surface shadow-sm"
+              : "text-on-surface-variant hover:text-on-surface");
+  });
+}
+
 /* -------------------------------------------------------------- holdings */
 
 async function loadHoldings() {
@@ -559,6 +746,10 @@ async function loadHoldings() {
   body.innerHTML = "";
   const positions = data.positions || [];
   $("holdings-count").textContent = `${positions.length} positions`;
+
+  renderHoldingPicker(positions);
+  styleHoldingRangeButtons();
+  if (state.hcSymbol) loadHoldingChart().catch((err) => showError(String(err)));
 
   if (!positions.length) {
     body.innerHTML = `<tr><td colspan="12" class="px-4 py-8 text-center text-on-surface-variant font-body-md">
@@ -1420,6 +1611,14 @@ function init() {
     state.engineOpen = !state.engineOpen;
     renderTrading();
   });
+  document.querySelectorAll(".hc-range-btn").forEach((button) => {
+    button.addEventListener("click", () => {
+      state.hcRange = button.dataset.hcRange;
+      styleHoldingRangeButtons();
+      loadHoldingChart().catch((err) => showError(String(err)));
+    });
+  });
+
   document.querySelectorAll(".range-btn").forEach((button) => {
     button.addEventListener("click", () => {
       state.range = button.dataset.range;

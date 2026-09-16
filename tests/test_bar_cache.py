@@ -172,7 +172,9 @@ def test_refresh_skips_a_symbol_already_at_the_last_closed_session(cache):
     loader = HistoryLoader(
         cache, source=RaisingSource(), session_cutoff=lambda: date(2026, 1, 5)
     )
-    added = loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 6))
+    # Asking only for what the cache already starts at, so the head rule has
+    # nothing to do and the tail rule is the only one under test.
+    added = loader.refresh(["QQQ"], date(2026, 1, 5), date(2026, 1, 6))
     assert added["QQQ"] == 0
 
 
@@ -191,7 +193,7 @@ def test_refresh_fetches_a_cache_one_session_behind_however_recent_it_is(cache):
     source = FakeSource(series)
     loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 6))
 
-    added = loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 6))
+    added = loader.refresh(["QQQ"], date(2026, 1, 5), date(2026, 1, 6))
 
     assert added["QQQ"] == 1
     assert source.calls[0][1] == date(2026, 1, 6)  # only the missing tail
@@ -224,3 +226,51 @@ def test_a_symbol_the_source_cannot_fetch_is_absent_not_fatal(cache):
     added = loader.refresh(["NOPE"], date(2026, 1, 1), date(2026, 1, 10))
     assert added["NOPE"] == 0
     assert "NOPE" not in loader.load(["NOPE"], date(2026, 1, 1), date(2026, 1, 10))
+
+
+# ------------------------------------------------------------- the head gap
+#
+# A series used to be only as long as the first window anyone asked for, and
+# nothing said so. The dashboard's previous-close lookup asks for twelve days,
+# so a holding it had touched showed twelve days of chart however long a range
+# the reader picked - 1Y and 1M drew the same line.
+
+
+def test_refresh_backfills_a_cache_that_starts_too_late(cache):
+    cache.upsert("QQQ", [bar(date(2026, 1, 5), "100")], source="test")
+    series = {"QQQ": [bar(date(2026, 1, d), "100") for d in range(1, 6)]}
+    source = FakeSource(series)
+    loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 5))
+
+    loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 5))
+
+    _, fetched_start, fetched_end = source.calls[0]
+    assert (fetched_start, fetched_end) == (date(2026, 1, 1), date(2026, 1, 4))
+    assert cache.coverage("QQQ")[0] == date(2026, 1, 1)
+
+
+def test_both_ends_are_filled_in_one_pass(cache):
+    cache.upsert("QQQ", [bar(date(2026, 1, 5), "100")], source="test")
+    series = {"QQQ": [bar(date(2026, 1, d), "100") for d in range(1, 8)]}
+    source = FakeSource(series)
+    loader = HistoryLoader(cache, source=source, session_cutoff=lambda: date(2026, 1, 7))
+
+    loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 7))
+
+    assert [(c[1], c[2]) for c in source.calls] == [
+        (date(2026, 1, 1), date(2026, 1, 4)),   # head
+        (date(2026, 1, 6), date(2026, 1, 7)),   # tail
+    ]
+    assert cache.coverage("QQQ") == (date(2026, 1, 1), date(2026, 1, 7))
+
+
+def test_a_fully_covered_range_fetches_nothing(cache):
+    """The common case, and the one that must stay free."""
+    cache.upsert(
+        "QQQ", [bar(date(2026, 1, d), "100") for d in range(1, 6)], source="test"
+    )
+    loader = HistoryLoader(
+        cache, source=RaisingSource(), session_cutoff=lambda: date(2026, 1, 5)
+    )
+
+    assert loader.refresh(["QQQ"], date(2026, 1, 1), date(2026, 1, 5)) == {"QQQ": 0}
