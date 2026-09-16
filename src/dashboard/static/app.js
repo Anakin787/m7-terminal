@@ -491,7 +491,7 @@ function renderChart(data) {
 /** Crosshair, dot and tooltip for a line chart.
  *
  * Shared by the portfolio chart and the per-holding price chart, which draw
- * the same shape and differ only in what a point is worth (`valueOf`) and what
+ * the same shape and differ only in what a point is worth (`readValue`) and what
  * the tooltip says about it (`describe`). The `ids` argument names the host
  * and tooltip elements, since the two charts live on different views.
  */
@@ -515,7 +515,12 @@ function renderBenchmarkLegend(bench) {
 }
 
 function attachHover(svg, points, x, y, pad, innerH, options = {}) {
-  const valueOf = options.valueOf || ((p) => p.total_krw);
+  // Not `options.valueOf`: every object inherits Object.prototype.valueOf, so
+  // `options.valueOf || fallback` never reaches the fallback and the chart
+  // that passes no options ends up calling Object.prototype.valueOf on a data
+  // point - "Cannot convert undefined or null to object", thrown inside the
+  // mousemove handler where nothing shows it.
+  const readValue = options.readValue || ((p) => p.total_krw);
   const describe = options.describe || ((p) =>
     `<div class="text-on-surface-variant/70 mb-1">${p.ts.replace("T", " ").slice(0, 16)}</div>` +
     `<div class="text-on-surface font-bold">${fmtInt(p.total_krw)} KRW</div>` +
@@ -567,7 +572,7 @@ function attachHover(svg, points, x, y, pad, innerH, options = {}) {
 
     const point = points[nearest];
     const cx = x(nearest);
-    const cy = y(valueOf(point));
+    const cy = y(readValue(point));
 
     crosshair.setAttribute("x1", cx); crosshair.setAttribute("x2", cx);
     crosshair.style.display = "";
@@ -841,7 +846,7 @@ function renderHoldingChart(data) {
     <rect id="hc-hit" x="${pad.left}" y="${pad.top}" width="${innerW}" height="${innerH}" fill="transparent" pointer-events="all"/>`;
 
   attachHover(svg, points, x, y, pad, innerH, {
-    valueOf: (p) => p.close,
+    readValue: (p) => p.close,
     describe: (p) => {
       const diff = avg > 0 ? (p.close - avg) / avg : null;
       return `<div class="text-on-surface-variant/70 mb-1">${p.date}</div>` +
