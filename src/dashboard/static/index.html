@@ -90,6 +90,18 @@
      stylesheet after this block, so that rule would simply be overwritten. */
   .h-viewport { height: 100vh; }
   @supports (height: 100dvh) { .h-viewport { height: 100dvh; } }
+  /* The Overview card is a trailer for the report, not the report. The 260
+     characters it carries are two lines beside a wide desktop column and
+     twenty in a phone's, where the card ended up taller than the four KPIs
+     above it - for text that ends in an ellipsis either way. Four lines is
+     enough to decide whether to open it, and VIEW DETAILS has the rest. */
+  .ai-preview {
+    display: -webkit-box; -webkit-box-orient: vertical;
+    -webkit-line-clamp: 4; line-clamp: 4; overflow: hidden;
+  }
+  @media (min-width: 640px) {
+    .ai-preview { display: block; overflow: visible; }
+  }
   /* The Reports and Audit cards are held to the viewport rather than grown by
      their rows (see the comments on those sections). The subtraction is the
      top bar plus main's padding twice, and that padding is smaller on a
@@ -305,15 +317,20 @@
         </div>
 
         <!-- AI insight -->
-        <div class="bg-primary-container/10 backdrop-blur-md border border-primary/30 rounded-lg p-4 flex flex-wrap items-start gap-4" id="ai-card" hidden>
-          <div class="w-10 h-10 shrink-0 rounded-lg bg-primary-container/20 border border-primary/30 flex items-center justify-center">
-            <span class="material-symbols-outlined text-primary">auto_awesome</span>
+        <!-- One row on a wide screen. On a narrow one the basis takes the
+             width the icon leaves, which pushes VIEW DETAILS onto a second
+             row rather than letting it squeeze the text into a column two
+             words wide - the same 260 characters then read in a third of
+             the lines, before the clamp even applies. -->
+        <div class="bg-primary-container/10 backdrop-blur-md border border-primary/30 rounded-lg p-3 sm:p-4 flex flex-wrap items-start gap-3 sm:gap-4" id="ai-card" hidden>
+          <div class="w-8 h-8 sm:w-10 sm:h-10 shrink-0 rounded-lg bg-primary-container/20 border border-primary/30 flex items-center justify-center">
+            <span class="material-symbols-outlined text-primary text-[20px] sm:text-[24px]">auto_awesome</span>
           </div>
-          <div class="flex-1 min-w-0">
-            <p class="text-on-surface"><span class="font-bold text-primary">AI Analyst Insight:</span> <span id="ai-text" class="text-on-surface-variant"></span></p>
-            <p class="text-on-surface-variant/50 font-data-mono text-[10px] mt-2" id="ai-ts"></p>
+          <div class="flex-1 min-w-0 basis-[calc(100%-3rem)] sm:basis-0">
+            <p class="text-on-surface ai-preview"><span class="font-bold text-primary">AI Analyst Insight:</span> <span id="ai-text" class="text-on-surface-variant"></span></p>
+            <p class="text-on-surface-variant/50 font-data-mono text-[10px] mt-1.5 sm:mt-2" id="ai-ts"></p>
           </div>
-          <a id="ai-link" target="_blank" rel="noopener" class="shrink-0 self-center border border-outline-variant hover:bg-surface-container-high px-3 py-1.5 rounded text-label-caps font-bold tracking-wide transition-colors">VIEW DETAILS</a>
+          <a id="ai-link" target="_blank" rel="noopener" class="shrink-0 ml-auto self-center border border-outline-variant hover:bg-surface-container-high px-3 py-1.5 rounded text-label-caps font-bold tracking-wide transition-colors">VIEW DETAILS</a>
         </div>
       </section>
 
@@ -624,6 +641,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=18"></script>
+<script src="/static/app.js?v=19"></script>
 </body>
 </html>
