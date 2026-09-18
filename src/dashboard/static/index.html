@@ -80,17 +80,50 @@
   }
   ::-webkit-scrollbar-thumb:hover { background-color: #5b5f72; }
   ::-webkit-scrollbar-corner { background: transparent; }
+
+  /* A phone's URL bar is counted inside 100vh but sits on top of the page, so
+     a full-height shell ends up that much taller than what you can see - the
+     side nav's status block, and the pager at the foot of the Reports and
+     Audit cards, fall underneath it. dvh measures what is actually visible.
+     Browsers without dvh fall back to the vh these had before.
+     Not a redefinition of Tailwind's own h-screen: the CDN build injects its
+     stylesheet after this block, so that rule would simply be overwritten. */
+  .h-viewport { height: 100vh; }
+  @supports (height: 100dvh) { .h-viewport { height: 100dvh; } }
+  /* The Reports and Audit cards are held to the viewport rather than grown by
+     their rows (see the comments on those sections). The subtraction is the
+     top bar plus main's padding twice, and that padding is smaller on a
+     phone - so the height is a class here rather than one arbitrary value. */
+  .h-viewport-card { height: calc(100vh - 6rem); }
+  @media (min-width: 640px) { .h-viewport-card { height: calc(100vh - 7rem); } }
+  @supports (height: 100dvh) {
+    .h-viewport-card { height: calc(100dvh - 6rem); }
+    @media (min-width: 640px) { .h-viewport-card { height: calc(100dvh - 7rem); } }
+  }
 </style>
 </head>
-<body class="bg-background text-on-surface font-body-md text-body-md antialiased overflow-hidden flex h-screen w-full">
+<body class="bg-background text-on-surface font-body-md text-body-md antialiased overflow-hidden flex h-viewport w-full">
 
-<!-- SIDE NAV -->
-<nav class="bg-surface fixed left-0 top-0 h-screen w-[220px] border-r border-outline-variant flex flex-col justify-between py-margin px-gutter z-50">
+<!-- SIDE NAV
+     Permanent from lg up, a drawer below it. 220px of permanent nav on a
+     390px phone leaves 170px for the page, which is narrower than a single
+     KPI number - so under lg it slides out of the way and the top bar grows
+     a button to bring it back. -->
+<nav id="sidenav" aria-label="주 메뉴"
+  class="bg-surface fixed left-0 top-0 h-viewport w-[220px] border-r border-outline-variant flex flex-col justify-between py-margin px-gutter z-50
+         -translate-x-full transition-transform duration-200 ease-out lg:translate-x-0 motion-reduce:transition-none">
   <div>
     <div class="mb-8 px-2">
-      <div class="flex items-center gap-3 mb-1">
+      <!-- The close button costs the wordmark about 30px, which at text-xl is
+           exactly enough to break "M7 Terminal" over two lines. It is only
+           there while the nav is a drawer, so the smaller type is too. -->
+      <div class="flex items-center gap-2 lg:gap-3 mb-1">
         <img src="/static/favicon.png" alt="" width="32" height="32" class="rounded shrink-0"/>
-        <h1 class="text-primary text-xl font-bold leading-none">M7 Terminal</h1>
+        <h1 class="text-primary text-lg lg:text-xl font-bold leading-none whitespace-nowrap">M7 Terminal</h1>
+        <button type="button" id="nav-close" title="메뉴 닫기" aria-label="메뉴 닫기"
+          class="lg:hidden ml-auto -mr-1 p-1 text-on-surface-variant hover:text-on-surface transition-colors shrink-0">
+          <span class="material-symbols-outlined text-[20px]">close</span>
+        </button>
       </div>
       <p class="text-on-surface-variant font-data-mono text-xs uppercase tracking-wider">Quantitative Analysis</p>
     </div>
@@ -127,23 +160,34 @@
   </div>
 </nav>
 
-<div class="ml-[220px] w-[calc(100%-220px)] h-full flex flex-col">
+<!-- Tapping anywhere off the open drawer closes it, and the dimmed page
+     behind says the rest of the screen is not what you are touching now. -->
+<div id="nav-scrim" hidden class="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm lg:hidden"></div>
+
+<div class="w-full lg:ml-[220px] lg:w-[calc(100%-220px)] h-full flex flex-col">
   <!-- TOP BAR -->
-  <header class="bg-surface/40 backdrop-blur-md fixed top-0 right-0 left-[220px] h-16 border-b border-outline-variant flex justify-between items-center px-margin z-40">
-    <h2 class="text-headline-md font-bold text-on-surface" id="page-title">Overview</h2>
-    <div class="flex items-center gap-6">
+  <header class="bg-surface/40 backdrop-blur-md fixed top-0 right-0 left-0 lg:left-[220px] h-16 border-b border-outline-variant flex justify-between items-center gap-2 px-4 sm:px-margin z-40">
+    <div class="flex items-center gap-2 min-w-0">
+      <button type="button" id="nav-toggle" aria-expanded="false" aria-controls="sidenav"
+        title="메뉴" aria-label="메뉴 열기"
+        class="lg:hidden -ml-2 p-2 text-on-surface-variant hover:text-on-surface transition-colors shrink-0">
+        <span class="material-symbols-outlined">menu</span>
+      </button>
+      <h2 class="text-headline-md font-bold text-on-surface truncate" id="page-title">Overview</h2>
+    </div>
+    <div class="flex items-center gap-3 sm:gap-6 shrink-0">
       <div class="hidden lg:flex gap-4 font-data-mono text-xs">
         <span class="text-on-surface-variant border border-outline-variant px-2 py-1 rounded" id="fx-chip">USD/KRW: —</span>
         <span id="krx-chip" class="text-on-surface-variant/50 border border-outline-variant/30 px-2 py-1 rounded">KRX: —</span>
         <span id="us-chip" class="text-on-surface-variant/50 border border-outline-variant/30 px-2 py-1 rounded">US: —</span>
       </div>
       <div class="h-6 w-px bg-outline-variant hidden lg:block"></div>
-      <div class="flex items-center gap-4">
+      <div class="flex items-center gap-2 sm:gap-4">
         <!-- The engine's stop control. Live: it creates/removes the
              KILL_SWITCH file the risk gate checks first. -->
         <button id="kill-btn" title="자동매매 발주를 즉시 중단합니다"
-          class="bg-surface-container text-on-surface-variant border border-outline-variant/40 px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide">
-          PAUSE TRADING
+          class="bg-surface-container text-on-surface-variant border border-outline-variant/40 px-3 sm:px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide whitespace-nowrap">
+          PAUSE<span class="hidden sm:inline"> TRADING</span>
         </button>
         <button class="text-on-surface-variant hover:text-on-surface transition-colors" id="glossary-btn" title="용어 설명">
           <span class="material-symbols-outlined">help</span>
@@ -155,7 +199,7 @@
     </div>
   </header>
 
-  <main class="flex-1 overflow-y-auto mt-16 p-margin bg-background">
+  <main class="flex-1 overflow-y-auto mt-16 p-4 sm:p-margin bg-background">
     <div class="w-full space-y-gutter">
 
       <!-- Global error -->
@@ -212,7 +256,7 @@
         <div class="grid grid-cols-1 xl:grid-cols-12 gap-gutter">
           <!-- Portfolio value over time -->
           <div class="xl:col-span-8 bg-surface-container rounded-lg border border-outline-variant/50 p-4 flex flex-col">
-            <div class="flex justify-between items-center mb-4">
+            <div class="flex flex-wrap justify-between items-center gap-2 mb-4">
               <h3 class="text-headline-md font-bold text-on-surface">Portfolio Value</h3>
               <div class="flex bg-surface-container-highest rounded p-0.5 border border-outline-variant/30" id="range-toggle">
                 <button data-range="1W" class="range-btn">1W</button>
@@ -237,7 +281,7 @@
           <!-- Allocation -->
           <div class="xl:col-span-4 bg-surface-container rounded-lg border border-outline-variant/50 p-4 flex flex-col">
             <h3 class="text-headline-md font-bold text-on-surface mb-4">Allocation</h3>
-            <div class="flex border-b border-outline-variant/50 mb-6" id="alloc-tabs">
+            <div class="flex border-b border-outline-variant/50 mb-6 overflow-x-auto" id="alloc-tabs">
               <button data-by="market" class="alloc-tab">By Market (KR/US)</button>
               <button data-by="currency" class="alloc-tab">By Currency</button>
               <button data-by="bucket" class="alloc-tab">By Plan</button>
@@ -261,7 +305,7 @@
         </div>
 
         <!-- AI insight -->
-        <div class="bg-primary-container/10 backdrop-blur-md border border-primary/30 rounded-lg p-4 flex items-start gap-4" id="ai-card" hidden>
+        <div class="bg-primary-container/10 backdrop-blur-md border border-primary/30 rounded-lg p-4 flex flex-wrap items-start gap-4" id="ai-card" hidden>
           <div class="w-10 h-10 shrink-0 rounded-lg bg-primary-container/20 border border-primary/30 flex items-center justify-center">
             <span class="material-symbols-outlined text-primary">auto_awesome</span>
           </div>
@@ -313,10 +357,10 @@
             <h3 class="text-headline-md font-bold">Holdings</h3>
             <p class="text-on-surface-variant/50 text-xs mt-0.5">종목명을 클릭하면 직접 수정할 수 있습니다</p>
           </div>
-          <span class="font-data-mono text-xs text-on-surface-variant" id="holdings-count"></span>
+          <span class="font-data-mono text-xs text-on-surface-variant whitespace-nowrap shrink-0" id="holdings-count"></span>
         </div>
         <div class="overflow-x-auto">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[68rem] text-sm">
             <thead>
               <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
                 <th class="text-left px-4 py-2 font-bold">Symbol</th>
@@ -349,7 +393,7 @@
               <h3 class="text-headline-md font-bold text-on-surface">AI 매수 보류</h3>
               <p class="text-on-surface-variant/50 text-xs mt-0.5">보류된 종목은 <span class="font-bold">매수만</span> 막힙니다. 매도는 전략이 그대로 판단합니다.</p>
             </div>
-            <span class="font-data-mono text-xs text-on-surface-variant" id="veto-count"></span>
+            <span class="font-data-mono text-xs text-on-surface-variant whitespace-nowrap shrink-0" id="veto-count"></span>
           </div>
           <div id="veto-list" class="flex flex-col gap-2"></div>
         </div>
@@ -416,7 +460,7 @@
             </p>
           </div>
           <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="w-full min-w-[52rem] text-sm">
               <thead>
                 <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
                   <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
@@ -441,7 +485,7 @@
             </p>
           </div>
           <div class="overflow-x-auto">
-            <table class="w-full text-sm">
+            <table class="w-full min-w-[52rem] text-sm">
               <thead>
                 <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
                   <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
@@ -465,10 +509,10 @@
            the middle of the screen. A table is easier to read when its frame
            holds still, and empty space inside the card costs nothing.
            7rem is the top bar (4rem) plus the main padding (1.5rem, twice). -->
-      <section data-view="reports" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-[calc(100vh-7rem)] min-h-[24rem]">
+      <section data-view="reports" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-viewport-card min-h-[24rem]">
         <div class="p-4 border-b border-outline-variant/50 shrink-0"><h3 class="text-headline-md font-bold">Notion Reports</h3></div>
         <div id="reports-scroll" class="overflow-auto min-h-0 flex-1">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[46rem] text-sm">
             <thead>
               <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider">
                 <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">생성 시각</th>
@@ -491,7 +535,7 @@
            scrolling the rows inside keeps the filters and the pager in view at
            whatever height the rows happen to be. min-h: on a short window the
            page may scroll rather than squeeze the card down to nothing. -->
-      <section data-view="audit" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-[calc(100vh-7rem)] min-h-[24rem]">
+      <section data-view="audit" hidden class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col h-viewport-card min-h-[24rem]">
         <div class="p-4 border-b border-outline-variant/50 flex items-center justify-between gap-4 flex-wrap shrink-0">
           <!-- No width cap on the description. A 48rem measure is a reading
                aid for a paragraph; this is one sentence, and capping it just
@@ -505,7 +549,7 @@
               실행이 그걸 발견한 때입니다.
             </p>
           </div>
-          <div class="flex gap-1 shrink-0" id="audit-filters">
+          <div class="flex gap-1 flex-wrap min-w-0" id="audit-filters">
             <button class="audit-tab" data-category="">전체</button>
             <button class="audit-tab" data-category="universe">유니버스</button>
             <button class="audit-tab" data-category="strategy_params">파라미터</button>
@@ -516,7 +560,7 @@
           </div>
         </div>
         <div id="audit-scroll" class="overflow-auto min-h-0 flex-1">
-          <table class="w-full text-sm">
+          <table class="w-full min-w-[56rem] text-sm">
             <!-- Sticky headers: the columns have to stay named while the rows
                  move under them. The border and background live on the cells,
                  not the row, because a sticky <tr> keeps neither. -->
@@ -580,6 +624,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=17"></script>
+<script src="/static/app.js?v=18"></script>
 </body>
 </html>

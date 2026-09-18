@@ -1319,6 +1319,9 @@ function renderEngineDisclosure(data, halted) {
     : "";
 }
 
+const KILL_BTN_BASE =
+  "border px-3 sm:px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide whitespace-nowrap";
+
 function renderTrading() {
   const data = state.trading;
   const halted = !!data?.halted;
@@ -1328,13 +1331,18 @@ function renderTrading() {
   if (data === null) {
     button.textContent = "TRADING —";
     button.disabled = true;
-    button.className = "bg-surface-container text-on-surface-variant/40 border border-outline-variant/40 px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide cursor-not-allowed";
+    button.className = KILL_BTN_BASE + " bg-surface-container text-on-surface-variant/40 border-outline-variant/40 cursor-not-allowed";
   } else {
     button.disabled = false;
-    button.textContent = halted ? "RESUME TRADING" : "PAUSE TRADING";
-    button.className = halted
-      ? "bg-tertiary-container/20 text-tertiary-fixed-dim border border-tertiary-container/40 px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide hover:bg-tertiary-container/30 transition-colors"
-      : "bg-surface-container text-on-surface-variant border border-outline-variant/40 px-4 py-1.5 rounded font-label-caps text-label-caps tracking-wide hover:text-on-surface transition-colors";
+    // "TRADING" is the half of the label a narrow top bar can afford to drop:
+    // the verb is what you read, and the button sits beside the engine's own
+    // page. Two spans rather than two strings, so it answers to the viewport
+    // and not to whenever this function last happened to run.
+    button.innerHTML = (halted ? "RESUME" : "PAUSE") +
+      '<span class="hidden sm:inline"> TRADING</span>';
+    button.className = KILL_BTN_BASE + (halted
+      ? " bg-tertiary-container/20 text-tertiary-fixed-dim border-tertiary-container/40 hover:bg-tertiary-container/30 transition-colors"
+      : " bg-surface-container text-on-surface-variant border-outline-variant/40 hover:text-on-surface transition-colors");
   }
 
   if (!$("ks-state")) return;
@@ -1782,7 +1790,7 @@ function styleAuditTabs() {
 function styleAllocTabs() {
   document.querySelectorAll(".alloc-tab").forEach((tab) => {
     const active = tab.dataset.by === state.allocBy;
-    tab.className = "alloc-tab px-4 py-2 font-body-md text-sm transition-colors " +
+    tab.className = "alloc-tab shrink-0 whitespace-nowrap px-4 py-2 font-body-md text-sm transition-colors " +
       (active ? "text-primary border-b-2 border-primary -mb-px" : "text-on-surface-variant hover:text-on-surface");
   });
 }
@@ -1843,8 +1851,35 @@ function init() {
   $("glossary-btn").addEventListener("click", () => { glossary.hidden = false; });
   $("glossary-close").addEventListener("click", closeGlossary);
   glossary.addEventListener("click", (event) => { if (event.target === glossary) closeGlossary(); });
+
+  // Below lg the side nav is a drawer. Only the transform and the scrim are
+  // scripted: `lg:translate-x-0` and `lg:hidden` in the markup already hold
+  // the nav open and the scrim away on a wide screen, so nothing here has to
+  // know the breakpoint or watch for it being crossed.
+  const sidenav = $("sidenav");
+  const scrim = $("nav-scrim");
+  const navToggle = $("nav-toggle");
+  const setNavOpen = (open) => {
+    sidenav.classList.toggle("-translate-x-full", !open);
+    scrim.hidden = !open;
+    navToggle.setAttribute("aria-expanded", String(open));
+    navToggle.setAttribute("aria-label", open ? "메뉴 닫기" : "메뉴 열기");
+  };
+  const navOpen = () => navToggle.getAttribute("aria-expanded") === "true";
+  navToggle.addEventListener("click", () => setNavOpen(!navOpen()));
+  $("nav-close").addEventListener("click", () => setNavOpen(false));
+  scrim.addEventListener("click", () => setNavOpen(false));
+  // Picking a page is the drawer's whole job, so it steps aside once picked -
+  // including when the page picked is the one already showing, where the hash
+  // does not change and nothing else would close it.
+  $("nav").addEventListener("click", (event) => {
+    if (event.target.closest(".nav-item")) setNavOpen(false);
+  });
+
   window.addEventListener("keydown", (event) => {
-    if (event.key === "Escape" && !glossary.hidden) closeGlossary();
+    if (event.key !== "Escape") return;
+    if (!glossary.hidden) closeGlossary();
+    else if (navOpen()) setNavOpen(false);
   });
   // Changing the hash is a same-document navigation, so deep links only work
   // if we listen for it.
