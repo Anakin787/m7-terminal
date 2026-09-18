@@ -1456,10 +1456,10 @@ function signalRow(entry) {
   const row = document.createElement("tr");
   row.className = "border-b border-outline-variant/20 hover:bg-surface-container-high transition-colors align-top";
 
-  row.appendChild(cell("px-4 py-3 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
+  row.appendChild(cell("px-4 py-2 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
     fmtStamp(entry.ts)));
 
-  const symbolCell = cell("px-4 py-3 whitespace-nowrap");
+  const symbolCell = cell("px-4 py-2 whitespace-nowrap");
   const symbol = document.createElement("div");
   symbol.className = "font-data-mono text-sm font-bold text-on-surface";
   symbol.textContent = entry.symbol || "—";
@@ -1469,7 +1469,7 @@ function signalRow(entry) {
   symbolCell.append(symbol, strategy);
   row.appendChild(symbolCell);
 
-  const sideCell = cell("px-4 py-3 whitespace-nowrap");
+  const sideCell = cell("px-4 py-2 whitespace-nowrap");
   sideCell.appendChild(sideChip(entry.side));
   const type = document.createElement("div");
   type.className = "text-[10px] text-on-surface-variant/50 mt-0.5";
@@ -1477,11 +1477,11 @@ function signalRow(entry) {
   sideCell.appendChild(type);
   row.appendChild(sideCell);
 
-  row.appendChild(cell("px-4 py-3 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
+  row.appendChild(cell("px-4 py-2 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
     orderSize(entry)));
 
   const outcome = SIGNAL_OUTCOME[entry.outcome] || { label: entry.outcome || "—", tone: "text-on-surface-variant" };
-  const verdictCell = cell("px-4 py-3 whitespace-nowrap");
+  const verdictCell = cell("px-4 py-2 whitespace-nowrap");
   const verdict = document.createElement("div");
   verdict.className = "text-xs font-bold " + outcome.tone;
   verdict.textContent = outcome.label;
@@ -1496,7 +1496,7 @@ function signalRow(entry) {
 
   // The gate's detail replaces the strategy's reason when there is one: on a
   // rejected signal, why it was stopped outranks why it was proposed.
-  row.appendChild(cell("px-4 py-3 text-xs text-on-surface-variant max-w-xl",
+  row.appendChild(cell("px-4 py-2 text-xs text-on-surface-variant max-w-xl",
     entry.reject_detail || entry.reason || "—"));
   return row;
 }
@@ -1505,10 +1505,10 @@ function orderRow(entry) {
   const row = document.createElement("tr");
   row.className = "border-b border-outline-variant/20 hover:bg-surface-container-high transition-colors align-top";
 
-  row.appendChild(cell("px-4 py-3 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
+  row.appendChild(cell("px-4 py-2 font-data-mono text-xs text-on-surface-variant whitespace-nowrap",
     fmtStamp(entry.ts)));
 
-  const symbolCell = cell("px-4 py-3 whitespace-nowrap");
+  const symbolCell = cell("px-4 py-2 whitespace-nowrap");
   const symbol = document.createElement("div");
   symbol.className = "font-data-mono text-sm font-bold text-on-surface";
   symbol.textContent = entry.symbol || "—";
@@ -1518,15 +1518,15 @@ function orderRow(entry) {
   symbolCell.append(symbol, strategy);
   row.appendChild(symbolCell);
 
-  const sideCell = cell("px-4 py-3 whitespace-nowrap");
+  const sideCell = cell("px-4 py-2 whitespace-nowrap");
   sideCell.appendChild(sideChip(entry.side));
   row.appendChild(sideCell);
 
-  row.appendChild(cell("px-4 py-3 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
+  row.appendChild(cell("px-4 py-2 text-right font-data-mono text-xs text-on-surface whitespace-nowrap",
     orderSize(entry)));
 
   const status = ORDER_STATUS[entry.status] || { label: entry.status || "—", tone: "text-on-surface-variant" };
-  const statusCell = cell("px-4 py-3 whitespace-nowrap");
+  const statusCell = cell("px-4 py-2 whitespace-nowrap");
   const label = document.createElement("div");
   label.className = "text-xs font-bold " + status.tone;
   label.textContent = status.label;
@@ -1541,7 +1541,7 @@ function orderRow(entry) {
   statusCell.appendChild(mode);
   row.appendChild(statusCell);
 
-  const idCell = cell("px-4 py-3 max-w-xs");
+  const idCell = cell("px-4 py-2 max-w-xs");
   const clientId = document.createElement("div");
   clientId.className = "font-data-mono text-[10px] text-on-surface-variant/60 break-all";
   clientId.textContent = entry.client_order_id || "—";

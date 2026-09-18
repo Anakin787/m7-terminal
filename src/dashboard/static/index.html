@@ -401,29 +401,42 @@
       </section>
 
       <!-- ============ TRADING ============ -->
-      <section data-view="trading" hidden class="space-y-gutter">
+      <!-- Four stacked cards that grow with their contents came to 1800px
+           against an 800px window, so reading the orders meant scrolling past
+           the signals and losing them - on a page whose whole point is the
+           gap between the two. The section is held to the viewport like
+           Reports and Audit, and each card scrolls its own rows inside it.
+           The two tables split what the cards above them leave; those cards
+           are capped by percentage so they can never take the whole page,
+           which is what an expanded Engine Control would otherwise do.
+           The tables keep a floor of one row each, and the section scrolls
+           if that floor plus an open Engine Control does not fit: a panel
+           you opened on purpose may push the rows down, but it may not take
+           the last of them away. Collapsed - the usual state - nothing
+           scrolls at all. -->
+      <section data-view="trading" hidden class="flex flex-col gap-gutter h-viewport-card min-h-[32rem] overflow-y-auto">
 
         <!-- AI buy-holds: visible, and liftable -->
-        <div class="bg-surface-container rounded-lg border border-outline-variant/50 p-4" id="veto-card" hidden>
-          <div class="flex items-start justify-between gap-3 mb-3">
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 p-3 sm:p-4 flex flex-col shrink-0 min-h-0 max-h-[30%]" id="veto-card" hidden>
+          <div class="flex items-start justify-between gap-3 mb-3 shrink-0">
             <div>
               <h3 class="text-headline-md font-bold text-on-surface">AI 매수 보류</h3>
               <p class="text-on-surface-variant/50 text-xs mt-0.5">보류된 종목은 <span class="font-bold">매수만</span> 막힙니다. 매도는 전략이 그대로 판단합니다.</p>
             </div>
             <span class="font-data-mono text-xs text-on-surface-variant whitespace-nowrap shrink-0" id="veto-count"></span>
           </div>
-          <div id="veto-list" class="flex flex-col gap-2"></div>
+          <div id="veto-list" class="flex flex-col gap-2 overflow-y-auto min-h-0"></div>
         </div>
 
 
-        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col shrink-0 min-h-0 max-h-[45%]">
           <!-- Collapsed by default: this is a panel you read when something
                is wrong, and the header's PAUSE button is the stop you reach
                for when it is. The state chip stays out here, so the summary
                is never behind the toggle - and renderTrading() forces the
                panel open whenever that chip is not ARMED. -->
           <button type="button" id="engine-toggle" aria-expanded="false" aria-controls="engine-detail"
-            class="w-full p-4 flex items-center justify-between gap-4 text-left hover:bg-surface-container-high transition-colors">
+            class="w-full shrink-0 p-3 sm:p-4 flex items-center justify-between gap-4 text-left hover:bg-surface-container-high transition-colors">
             <span class="flex items-center gap-2">
               <span id="engine-chevron" class="material-symbols-outlined text-[20px] text-on-surface-variant transition-transform">chevron_right</span>
               <span class="text-headline-md font-bold">Engine Control</span>
@@ -431,7 +444,7 @@
             <span id="engine-state" class="font-label-caps text-label-caps px-2 py-1 rounded border border-outline-variant/40 text-on-surface-variant">—</span>
           </button>
 
-          <div id="engine-detail" hidden class="border-t border-outline-variant/50">
+          <div id="engine-detail" hidden class="border-t border-outline-variant/50 overflow-y-auto min-h-0">
           <!-- Three separate facts, shown separately: which one is stopping
                the engine decides what you would change to start it. -->
           <div class="grid grid-cols-1 md:grid-cols-3 divide-y md:divide-y-0 md:divide-x divide-outline-variant/30">
@@ -469,23 +482,23 @@
 
         <!-- Signals and orders are two tables, not one. A signal the gate
              refused never becomes an order, and that gap is the point. -->
-        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
-          <div class="p-4 border-b border-outline-variant/50">
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col flex-1 min-h-[9rem]">
+          <div class="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-outline-variant/50 shrink-0 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             <h3 class="text-headline-md font-bold">신호</h3>
-            <p class="text-on-surface-variant/60 text-sm mt-0.5">
+            <p class="text-on-surface-variant/60 text-xs sm:text-sm min-w-0">
               전략이 낸 것 전부입니다 — 리스크 게이트가 거부한 것도 그 사유와 함께 남습니다.
             </p>
           </div>
-          <div class="overflow-x-auto">
+          <div class="overflow-auto min-h-0 flex-1">
             <table class="w-full min-w-[52rem] text-sm">
               <thead>
-                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
-                  <th class="text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">판정</th>
-                  <th class="text-left px-4 py-2 font-bold">사유</th>
+                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider">
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">판정</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold">사유</th>
                 </tr>
               </thead>
               <tbody id="signals-body"></tbody>
@@ -493,24 +506,24 @@
           </div>
         </div>
 
-        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden">
-          <div class="p-4 border-b border-outline-variant/50">
+        <div class="bg-surface-container rounded-lg border border-outline-variant/50 overflow-hidden flex flex-col flex-1 min-h-[9rem]">
+          <div class="px-3 sm:px-4 py-2.5 sm:py-3 border-b border-outline-variant/50 shrink-0 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
             <h3 class="text-headline-md font-bold">주문</h3>
-            <p class="text-on-surface-variant/60 text-sm mt-0.5">
+            <p class="text-on-surface-variant/60 text-xs sm:text-sm min-w-0">
               게이트를 통과해 발주 경로까지 간 것입니다. PAPER에서는
               <code class="font-data-mono text-xs">simulated</code>로 기록되고 전송되지 않습니다.
             </p>
           </div>
-          <div class="overflow-x-auto">
+          <div class="overflow-auto min-h-0 flex-1">
             <table class="w-full min-w-[52rem] text-sm">
               <thead>
-                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider border-b border-outline-variant/50">
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
-                  <th class="text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
-                  <th class="text-left px-4 py-2 font-bold whitespace-nowrap">상태</th>
-                  <th class="text-left px-4 py-2 font-bold">주문 ID</th>
+                <tr class="text-on-surface-variant text-label-caps uppercase tracking-wider">
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">시각</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">종목</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">방향</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-right px-4 py-2 font-bold whitespace-nowrap">수량 · 금액</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold whitespace-nowrap">상태</th>
+                  <th class="sticky top-0 z-10 bg-surface-container border-b border-outline-variant/50 text-left px-4 py-2 font-bold">주문 ID</th>
                 </tr>
               </thead>
               <tbody id="orders-body"></tbody>
@@ -641,6 +654,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=19"></script>
+<script src="/static/app.js?v=20"></script>
 </body>
 </html>
