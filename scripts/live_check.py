@@ -8,6 +8,7 @@ orders worth several hundred dollars at once. That is not a first trade.
     python scripts/live_check.py --symbol SHY              # sends nothing
     python scripts/live_check.py --symbol SHY --execute    # buys 1 share, for real
     python scripts/live_check.py --symbol SHY --amount 5 --execute
+    python scripts/live_check.py --symbol SHY --amount 20 --seq 2 --execute
     python scripts/live_check.py --settle                  # poll open LIVE orders
 
 *Why it goes through the gate and the executor.* The point is to verify the
@@ -171,6 +172,16 @@ def parse_args(argv=None):
         default=None,
         help="수량 대신 금액으로 주문합니다. bucket-dca가 쓰는 경로입니다.",
     )
+    parser.add_argument(
+        "--seq",
+        type=int,
+        default=1,
+        help=(
+            "같은 세션·같은 종목의 몇 번째 주문인지 (기본 1). 주문 ID가 "
+            "전략-종목-세션-순번이라, 두 번째 주문은 --seq 2 없이는 첫 주문과 "
+            "같은 ID가 되어 중복으로 건너뜁니다."
+        ),
+    )
     parser.add_argument("--sell", action="store_true", help="매수 대신 매도합니다.")
     parser.add_argument(
         "--execute",
@@ -202,6 +213,9 @@ def run(argv=None):
             print(
                 "ERROR: --quantity 와 --amount 는 함께 쓸 수 없습니다.", file=sys.stderr
             )
+            return EXIT_REFUSED
+        if args.seq < 1:
+            print("ERROR: --seq 는 1 이상이어야 합니다.", file=sys.stderr)
             return EXIT_REFUSED
 
     require_config_file()
@@ -254,19 +268,23 @@ def run(argv=None):
     if not decision.approved:
         return EXIT_REJECTED
 
+    # Stamped here rather than left to the executor, whose sequence restarts
+    # at 1 every run: that is what makes re-running the same command safe,
+    # and also what made the 2026-09-22 amount order - a second order for
+    # SHY in the same session - derive the 1-share order's id and be skipped
+    # as a duplicate. The real id generator, not an f-string that looks like
+    # one: it squashes characters outside its safe set ("live-check" becomes
+    # "live_check").
+    intent = decision.intent.with_client_order_id(
+        make_client_order_id(STRATEGY_NAME, symbol, ctx.session_date, args.seq)
+    )
+
     if not args.execute:
         # The body is shown rather than sent: this is the exact bytes the
         # LIVE run would POST, which is the last thing worth reading before
         # deciding to send it.
-        # The real id generator, not an f-string that looks like one: it
-        # squashes characters outside its safe set, so "live-check" becomes
-        # "live_check" and a hand-built preview would show an id the executor
-        # never uses.
-        preview = decision.intent.with_client_order_id(
-            make_client_order_id(STRATEGY_NAME, symbol, ctx.session_date, 1)
-        )
         print(">>> 전송하지 않았습니다 (--execute 없음). 보낼 내용:")
-        print(f"    {order_body(preview)}")
+        print(f"    {order_body(intent)}")
         return EXIT_OK
 
     if not _confirm(signal, args.yes):
@@ -278,7 +296,7 @@ def run(argv=None):
     executor = OrderExecutor(
         trading, store, price_limits=ctx.price_limits, session_date=ctx.session_date
     )
-    record = executor.submit(decision.intent)
+    record = executor.submit(intent)
 
     print()
     print(f">>> 주문 결과: {record.status}")

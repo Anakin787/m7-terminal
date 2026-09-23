@@ -145,3 +145,15 @@ def test_the_preview_shows_the_id_the_executor_will_actually_use():
 
     assert shown == "live_check-SHY-2026-09-09-1"
     assert shown != f"{live_check.STRATEGY_NAME}-SHY-2026-09-09-1"
+
+
+def test_the_order_sequence_defaults_to_one():
+    """Re-running the same command must derive the same id, and so be a no-op."""
+    assert live_check.parse_args(["--symbol", "SHY"]).seq == 1
+
+
+def test_a_sequence_below_one_is_refused_before_anything_else():
+    assert (
+        live_check.run(["--symbol", "SHY", "--amount", "20", "--seq", "0"])
+        == live_check.EXIT_REFUSED
+    )
