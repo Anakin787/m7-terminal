@@ -58,7 +58,9 @@ _COMPLETE_HINTS = ("filled", "executed", "complete", "done", "체결완료", "�
 #: committing to one, the same defensive style _pick already uses in
 #: src/execution/context.py.
 _FILLED_QTY_KEYS = ("filledQuantity", "executedQuantity", "cumulativeQuantity")
-_AVG_PRICE_KEYS = ("avgFillPrice", "averagePrice", "executedPrice")
+_AVG_PRICE_KEYS = (
+    "averageFilledPrice", "avgFillPrice", "averagePrice", "executedPrice",
+)
 _COMMISSION_KEYS = ("commission", "fee")
 _TAX_KEYS = ("tax",)
 _STATUS_KEYS = ("status", "orderStatus")
@@ -90,6 +92,36 @@ def _pick_decimal(item, keys):
     return to_decimal(value)
 
 
+def _with_execution(payload):
+    """The order payload with its ``execution`` sub-object lifted to the top.
+
+    Toss reports a fill inside a nested object, not beside the status - the
+    first live order (2026-09-22, SHY x1) came back as::
+
+        {"status": "FILLED", "quantity": "1",
+         "execution": {"filledQuantity": "1", "averageFilledPrice": "81.31",
+                       "commission": "0.08", "tax": "0", "filledAt": "..."}}
+
+    Reading only the top level found no filled quantity, so that order stayed
+    ``submitted`` with no fill recorded although the broker had filled it in
+    400ms. Top-level keys still win where both exist, so a payload that does
+    put these fields flat reads exactly as before.
+    """
+    if not isinstance(payload, dict):
+        return payload
+    execution = payload.get("execution")
+    if not isinstance(execution, dict):
+        return payload
+    return {**execution, **{k: v for k, v in payload.items() if v is not None}}
+
+
+def _reports_complete(payload):
+    raw_status = str(_pick(payload, _STATUS_KEYS) or "").lower()
+    if any(hint in raw_status for hint in _NOT_COMPLETE_HINTS):
+        return False
+    return any(hint in raw_status for hint in _COMPLETE_HINTS)
+
+
 def _complete_without_a_target(payload):
     """Is an *amount* order finished? Its ordered quantity was never a number.
 
@@ -109,12 +141,7 @@ def _complete_without_a_target(payload):
     if remaining is not None:
         return STATUS_FILLED if remaining <= 0 else STATUS_PARTIALLY_FILLED
 
-    raw_status = str(_pick(payload, _STATUS_KEYS) or "").lower()
-    if any(hint in raw_status for hint in _NOT_COMPLETE_HINTS):
-        return STATUS_PARTIALLY_FILLED
-    if any(hint in raw_status for hint in _COMPLETE_HINTS):
-        return STATUS_FILLED
-    return STATUS_PARTIALLY_FILLED
+    return STATUS_FILLED if _reports_complete(payload) else STATUS_PARTIALLY_FILLED
 
 
 def _infer_status(payload, filled_qty, ordered_qty):
@@ -179,6 +206,7 @@ class Reconciler:
                 "접수되지 않았을 수 있습니다. 확인이 필요합니다."
             )
 
+        payload = _with_execution(payload)
         ordered_qty = to_decimal(order.get("quantity"))
         filled_qty = _pick_decimal(payload, _FILLED_QTY_KEYS)
         already_filled = to_decimal(order.get("filled_quantity")) or Decimal(0)
@@ -208,6 +236,16 @@ class Reconciler:
 
         if updates:
             self.store.update_order(client_order_id, **updates)
+
+        if new_status is None and filled_qty is None and _reports_complete(payload):
+            # The broker says done but names no quantity this reader knows.
+            # Not marked filled - that would assert shares with no fill row
+            # behind them - but not left to poll silently either, which is
+            # how the first live order sat as ``submitted`` unnoticed.
+            return (
+                f"{client_order_id}: 브로커는 체결 완료로 보고했지만 체결 수량을 "
+                "읽지 못했습니다 — 응답 형태 확인이 필요합니다."
+            )
 
         oco_note = ""
         if newly_filled > 0 and order.get("side") == "BUY":

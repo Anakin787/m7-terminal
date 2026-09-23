@@ -426,3 +426,74 @@ def test_an_order_absent_from_the_history_says_so_instead(firestore_client):
 
     assert "브로커 주문 이력에 없습니다" in result
     assert db.order_by_client_id(cid)["status"] == "unknown"
+
+
+# ------------------------------------------- Toss's real get_order response
+#
+# The first live order (2026-09-22, live_check SHY x1) filled in 400ms and
+# sat as ``submitted`` with no fill for hours: Toss puts the fill inside an
+# ``execution`` object and names the average price ``averageFilledPrice``,
+# neither of which the reader looked for. This is that response verbatim.
+
+
+TOSS_FILLED_SHY = {
+    "status": "FILLED",
+    "quantity": "1",
+    "execution": {
+        "filledQuantity": "1",
+        "averageFilledPrice": "81.31",
+        "commission": "0.08",
+        "tax": "0",
+        "filledAt": "2026-09-22T22:45:22.600+09:00",
+    },
+}
+
+
+def test_tosss_nested_execution_settles_a_quantity_order(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_order(
+        db, client_order_id="live_check-SHY-2026-09-21-1", symbol="SHY",
+        quantity="1", price=None, currency="USD", order_type="MARKET",
+    )
+    trading = FakeTrading(order_responses={"TOSS-1": TOSS_FILLED_SHY})
+
+    reconciler(trading, db).run()
+
+    order = db.order_by_client_id(cid)
+    assert order["status"] == "filled"
+    assert order["filled_quantity"] == "1"
+    fills = db.fills_for_order("TOSS-1")
+    assert len(fills) == 1
+    assert fills[0]["price"] == "81.31"
+    assert fills[0]["commission"] == "0.08"
+
+
+def test_tosss_nested_execution_settles_an_amount_order(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_amount_order(db)
+    response = {
+        "status": "FILLED",
+        "execution": {"filledQuantity": "0.6", "averageFilledPrice": "81.30"},
+    }
+    trading = FakeTrading(order_responses={"TOSS-1": response})
+
+    reconciler(trading, db).run()
+
+    order = db.order_by_client_id(cid)
+    assert order["status"] == "filled"
+    assert order["filled_quantity"] == "0.6"
+    assert db.fills_for_order("TOSS-1")[0]["price"] == "81.30"
+
+
+def test_a_reported_fill_with_no_readable_quantity_is_flagged_not_silent(firestore_client):
+    db = Store(firestore_client)
+    cid = seed_order(db, quantity="1")
+    trading = FakeTrading(
+        order_responses={"TOSS-1": {"status": "FILLED", "execution": {"qty": "1"}}}
+    )
+
+    [result] = reconciler(trading, db).run()
+
+    assert "체결 수량을 읽지 못했습니다" in result
+    assert db.order_by_client_id(cid)["status"] == "submitted"
+    assert db.fills_for_order("TOSS-1") == []
