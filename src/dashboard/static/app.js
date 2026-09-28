@@ -255,13 +255,15 @@ async function loadOverview() {
   // Invested capital, converted at the purchase-time rate where one is known.
   $("kpi-invested").textContent = fmtInt(data.purchase_krw) + " KRW";
 
-  $("kpi-pnl").textContent = fmtSigned(data.profit_krw);
-  $("kpi-pnl-wrap").className = "font-data-mono text-2xl font-bold tracking-tight " + toneClass(data.profit_krw);
-
   // The API reports both nominal and after-fee returns; show the real one
-  // when Toss provides it and say which is on screen.
+  // when Toss provides it and say which is on screen. Amount and rate come
+  // from the same basis - a nominal amount beside an after-fee rate is two
+  // different questions answered in one card.
   const hasAfterCost = data.profit_rate_after_cost !== null && data.profit_rate_after_cost !== undefined;
+  const shownProfit = hasAfterCost ? data.profit_after_cost_krw : data.profit_krw;
   const shownRate = hasAfterCost ? data.profit_rate_after_cost : data.profit_rate;
+  $("kpi-pnl").textContent = fmtSigned(shownProfit);
+  $("kpi-pnl-wrap").className = "font-data-mono text-2xl font-bold tracking-tight " + toneClass(shownProfit);
   const badge = $("kpi-pnl-rate");
   badge.textContent = fmtPct(shownRate);
   badge.className = "px-1.5 py-0.5 rounded font-data-mono text-[10px] font-bold " +

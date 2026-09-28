@@ -115,6 +115,22 @@ def test_after_cost_totals_only_when_reported():
     assert with_cost.profit_after_cost_krw == Decimal("550000")
 
 
+def test_after_cost_is_not_a_partial_sum_over_the_whole_portfolio():
+    """2026-09-28: only SHY reported an after-cost P&L (-415 KRW); dividing
+    that by the cost of every holding showed -0.00% for a portfolio down 28%.
+    """
+    snapshot = _summarise(
+        [
+            usd_position(profit_loss_after_cost=Decimal("-0.3")),
+            usd_position(),
+        ],
+        RATE,
+    )
+    assert snapshot.profit_after_cost_krw is None
+    assert snapshot.profit_rate_after_cost is None
+    assert snapshot.profit_rate is not None
+
+
 def test_daily_change_rate_uses_yesterdays_base():
     snapshot = _summarise([krw_position(daily_profit_loss=Decimal("100000"))], RATE)
 

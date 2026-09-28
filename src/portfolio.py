@@ -104,7 +104,12 @@ def _summarise(positions, rate):
     purchase_krw = ZERO
     after_cost_krw = ZERO
     daily_krw = ZERO
-    has_after_cost = False
+    #: After-cost figures are summed only when *every* position reports one.
+    #: Toss gives ``amountAfterCost`` for some holdings and not others (the
+    #: shares bought through the API have it; older holdings did not), and a
+    #: partial sum divided by the whole portfolio's cost read -0.00% for a
+    #: portfolio down 28%.
+    after_cost_complete = bool(positions)
     by_currency = {}
 
     for position in positions:
@@ -130,9 +135,10 @@ def _summarise(positions, rate):
         total_krw += eval_native * eval_rate
         purchase_krw += cost_native * cost_rate
 
-        if position.profit_loss_after_cost is not None:
+        if position.profit_loss_after_cost is None:
+            after_cost_complete = False
+        else:
             after_cost_krw += position.profit_loss_after_cost * eval_rate
-            has_after_cost = True
 
         if position.daily_profit_loss is not None:
             daily_krw += position.daily_profit_loss * eval_rate
@@ -146,7 +152,7 @@ def _summarise(positions, rate):
     snapshot.daily_profit_rate = _rate(daily_krw, previous)
     snapshot.by_currency = by_currency
 
-    if has_after_cost:
+    if after_cost_complete:
         snapshot.profit_after_cost_krw = after_cost_krw
         snapshot.profit_rate_after_cost = _rate(after_cost_krw, purchase_krw)
 

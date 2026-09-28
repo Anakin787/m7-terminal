@@ -113,11 +113,15 @@ def test_overview_combines_both_sources(client):
     assert data["buying_power"] == {"KRW": 5000000.0, "USD": 3500.5}
 
 
-def test_after_cost_profit_is_exposed(client):
+def test_a_partial_after_cost_profit_is_not_exposed(client):
+    """Only the Toss holding reports an after-cost figure, the manual one does
+    not - so there is no after-cost total for the portfolio, and the card
+    falls back to the nominal one rather than dividing part by whole."""
     data = client.get("/api/overview").json()
 
-    assert data["profit_after_cost_krw"] == 550000.0
-    assert data["profit_rate_after_cost"] is not None
+    assert data["profit_after_cost_krw"] is None
+    assert data["profit_rate_after_cost"] is None
+    assert data["profit_rate"] is not None
 
 
 def test_daily_profit_is_exposed(client):
