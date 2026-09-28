@@ -1,7 +1,7 @@
 """The step [10] tool: it must be hard to fire and impossible to fire quietly.
 
-This is the one entry point that can place a real order - ``trade.py --live``
-is still refused - so the tests that matter are the ones about refusing.
+This places a real order on demand, outside any strategy, so the tests that
+matter are the ones about refusing.
 """
 
 import io

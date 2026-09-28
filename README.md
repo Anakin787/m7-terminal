@@ -220,7 +220,7 @@ schtasks /Delete /TN "M7 Terminal Daily Report" /F           # 등록 해제
 python trade.py               # PAPER — 시장을 읽고, 아무것도 전송하지 않음
 python trade.py --dry-run     # 리스크 게이트까지만. DB에 기록 없음
 python trade.py --reconcile   # 미체결 LIVE 주문의 체결을 확인하고 OCO를 등록
-python trade.py --live        # 현재 거부됨 (아래 참고)
+python trade.py --live        # 실계좌 주문 (2026-09-28 개방)
 ```
 
 `config.yaml`의 `trading.enabled`를 켜고 `trading.strategies`에 직접 작성한 전략을 등록해야 동작합니다. 전략은 `Strategy`를 상속하고 `evaluate(ctx) -> list[Signal]`만 구현하며, **그 안에서 I/O를 하면 안 됩니다.**
@@ -234,7 +234,7 @@ python trade.py --live        # 현재 거부됨 (아래 참고)
 
 **`--reconcile`은 별도 경로입니다.** 전략도 리스크 게이트도 거치지 않고, 미체결 LIVE 주문(`submitted`/`unknown`/`partially_filled`)을 `GET /orders`로 조회해 체결을 `fills`에 기록하고, 매수 신호가 `stop_loss_price`/`take_profit_price`를 실었다면 체결 수량만큼 OCO 손절을 등록합니다. 전략 평가는 하루 한 번이면 되지만 체결 확인은 더 자주 돌려야 하므로 갈라뒀습니다 — 스케줄러에 별도 주기로 등록하세요.
 
-> **`--live`는 아직 열려 있지 않습니다.** reconciler와 OCO는 이제 있지만, 설계 [10]이 요구하는 "최소 수량 1주로 실거래 검증"은 별도 단계입니다.
+> **`--live`는 2026-09-28에 열렸습니다.** 설계 [10]의 실거래 검증(SHY 1주 9/22, SHY $20 금액 주문 9/23 — 둘 다 체결·정산 확인)을 마친 뒤입니다. LIVE는 config가 아니라 **이 플래그로만** 들어갑니다.
 
 **그 검증은 `scripts/live_check.py`로 합니다.** `trade.py`는 전략이 낸 신호를 통째로 처리하는 것밖에 못 하고, bucket-dca는 한 번에 8건 수백 달러어치를 냅니다 — 첫 실거래로 삼을 수 없습니다.
 
@@ -249,7 +249,7 @@ python scripts/live_check.py --settle                  # 미체결 LIVE 주문 �
 
 **금액 주문으로 한 번 더 돌릴 값어치가 있습니다.** bucket-dca 매수는 전부 금액 주문이고, reconciler는 그걸 수량 주문과 **다른 분기**에서 정산합니다 — 2026-09-10까지 `filled`에 도달할 수 없었던 그 분기입니다. 1주는 경로를 증명하고, 소액 금액 주문은 실제 주문이 탈 분기를 증명합니다.
 
-**여기가 LIVE가 열리는 유일한 지점입니다.** `trade.py --live`는 여전히 거부되고, 예약된 Cloud Run 잡은 그 플래그를 넘기지 않습니다(`args: python trade.py`). 그래서 이 스크립트는 `--execute` 없이는 아무것도 보내지 않고, 보낼 때는 **종목코드를 그대로 타이핑**해야 하며(`y` 로는 안 됩니다), 대화형 터미널이 아니면 `--yes` 없이는 거부합니다. 어떤 잡의 인자에도 들어 있지 않습니다.
+**단건 실주문 도구라서 발사가 어렵게 만들어져 있습니다.** 이 스크립트는 `--execute` 없이는 아무것도 보내지 않고, 보낼 때는 **종목코드를 그대로 타이핑**해야 하며(`y` 로는 안 됩니다), 대화형 터미널이 아니면 `--yes` 없이는 거부합니다. 어떤 잡의 인자에도 들어 있지 않습니다.
 
 **OCO는 진입 체결 이후에만 등록됩니다.** executor가 주문을 낼 때가 아니라 — 아직 체결되지 않은 주문에 손절을 거는 건 의미가 없고, 부분체결이면 그 수량만큼만 걸어야 합니다. 그래서 신호의 `stop_loss_price`/`take_profit_price`는 주문에 실려 저장되고, `--reconcile`이 체결을 확인한 뒤에야 조건주문을 보냅니다. 브라켓 만료일(`trading.oco_expire_days`)과 손절 주문가의 슬리피지(`trading.oco_stop_loss_slippage`)는 `config.example.yaml`을 참고하세요.
 

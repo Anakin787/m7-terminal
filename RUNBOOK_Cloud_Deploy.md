@@ -410,13 +410,14 @@ gcloud run jobs create m7-trade \
 | `python trade.py` | 매매 엔진 (기본 PAPER) |
 | `python trade.py --reconcile` | 미체결 LIVE 주문 체결 확인 + OCO 등록 |
 | `python trade.py --dry-run` | 리스크 게이트까지만, DB 기록 없음 |
+| `python trade.py --live` | 실계좌 주문. `m7-trade` 잡 인자 (2026-09-28~) |
 
-`--live`는 아직 **코드에서 거부된다**(exit 4). 설계 6절 [10]에서 최소 수량 1주 검증 후에 열린다.
+`--live`는 설계 [10] 실거래 검증 후 2026-09-28에 열렸다. **`m7-reconcile-schedule`은 `m7-trade`가 `--live`로 바뀐 뒤에만 켜 둔다** — `--reconcile`은 쓰기 권한 LIVE 클라이언트를 만든다.
 
 ### 종료 코드
 
 `main.py` / `trade.py` 공통: `0` 정상 · `2` 토스 API 오류 · `3` 예기치 못한 오류.
-`trade.py`는 추가로 `1` 엔진 비활성 · `4` `--live` 차단.
+`trade.py`는 추가로 `1` 엔진 비활성.
 
 ---
 

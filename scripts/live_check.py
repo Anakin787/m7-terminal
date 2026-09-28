@@ -24,9 +24,7 @@ than share-count orders - the one that could never reach ``filled`` until
 2026-09-10. One share proves the path; a small amount order proves the
 branch every real order will take.
 
-*This is the one place LIVE opens.* ``trade.py --live`` is still refused, and
-the scheduled Cloud Run job passes no such flag, so the engine cannot trade
-for real by itself. This script can, which is why it does nothing without
+*It places a single real order on demand.* That is why it does nothing without
 ``--execute`` and a typed confirmation, and why it is in no job's arguments.
 Run it by hand, watch what happens, and settle it with ``--settle``.
 """

@@ -173,9 +173,50 @@ def test_dry_run_writes_nothing(wired, firestore_client, capsys):
     assert "DRY-RUN" in capsys.readouterr().out
 
 
-def test_live_is_refused_until_step_10(capsys):
-    assert trade.run(["--live"]) == trade.EXIT_LIVE_BLOCKED
-    assert "[10]" in capsys.readouterr().err
+class FakeLiveOrders:
+    """A LIVE TradingApi that accepts orders instead of refusing them."""
+
+    mode = trade.TradingMode.LIVE
+
+    def __init__(self):
+        self.bodies = []
+
+    def place_order(self, body):
+        self.bodies.append(body)
+        return {"orderId": "TOSS-LIVE-1"}
+
+
+def test_live_sends_the_approved_order_for_real(wired, monkeypatch, firestore_client, capsys):
+    live = FakeLiveOrders()
+    asked = {}
+
+    def build(config, mode=None, **kwargs):
+        asked["mode"] = mode
+        return live
+
+    monkeypatch.setattr(trade, "build_trading_api", build)
+
+    assert trade.run(["--live"]) == trade.EXIT_OK
+
+    assert asked["mode"] is trade.TradingMode.LIVE
+    assert len(live.bodies) == 1
+    [order] = Store(firestore_client).recent_orders()
+    assert (order["mode"], order["status"]) == ("live", "submitted")
+    assert "실계좌 주문이 전송됩니다" in capsys.readouterr().out
+
+
+def test_without_the_flag_nothing_is_sent(wired, monkeypatch):
+    """Config cannot open LIVE; only the flag can."""
+    asked = {}
+
+    def build(config, mode=None, **kwargs):
+        asked["mode"] = mode
+        return FakeTrading()
+
+    monkeypatch.setattr(trade, "build_trading_api", build)
+
+    assert trade.run([]) == trade.EXIT_OK
+    assert asked["mode"] is trade.TradingMode.PAPER
 
 
 def test_disabled_trading_does_nothing(tmp_path, monkeypatch):

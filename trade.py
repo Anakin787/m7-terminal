@@ -7,7 +7,7 @@ trade - or, worse, runs twice. They also want different schedules.
     python trade.py               # PAPER - reads the market, sends nothing
     python trade.py --dry-run     # risk gate only, nothing written
     python trade.py --reconcile   # poll open LIVE orders, record fills, arm OCO brackets
-    python trade.py --live        # refused until step [10] opens it
+    python trade.py --live        # real orders - opened 2026-09-28 after step [10]
 """
 
 import argparse
@@ -40,7 +40,6 @@ EXIT_OK = 0
 EXIT_DISABLED = 1
 EXIT_TOSS_ERROR = 2
 EXIT_UNEXPECTED = 3
-EXIT_LIVE_BLOCKED = 4
 
 #: Long enough for a 252-day momentum lookback plus its skip and a trend SMA,
 #: with room to spare. Longer than any strategy needs costs one extra request
@@ -93,7 +92,7 @@ def parse_args(argv=None):
     parser.add_argument(
         "--live",
         action="store_true",
-        help="실계좌 주문. 현재 단계에서는 거부됩니다 (설계 [10]에서 별도로 엽니다).",
+        help="실계좌 주문. 없으면 PAPER - 주문을 전송하지 않습니다.",
     )
     parser.add_argument(
         "--dry-run",
@@ -119,23 +118,13 @@ def _banner(mode, dry_run):
     print(f"  M7 Terminal · 매매 엔진 · 모드: {label}")
     if mode is TradingMode.PAPER:
         print("  주문은 전송되지 않습니다. 쓰기 권한 없는 클라이언트를 사용합니다.")
+    elif not dry_run:
+        print("  실계좌 주문이 전송됩니다.")
     print("=" * 56)
 
 
 def run(argv=None):
     args = parse_args(argv)
-
-    if args.live:
-        # Refused rather than merely discouraged. Step [10] is where LIVE
-        # opens, gated on its own separate validation (minimum 1-share real
-        # trade) - the reconciler and OCO bracket existing is necessary but
-        # not sufficient for that step to be considered done.
-        print(
-            "ERROR: --live는 아직 열려 있지 않습니다.\n"
-            "       설계 6절 [10]에서 최소 수량 1주로 별도 검증한 뒤 엽니다.",
-            file=sys.stderr,
-        )
-        return EXIT_LIVE_BLOCKED
 
     # Strategies, limits and the universe all come from config.yaml. Running
     # without it would not trade - it would silently do nothing and look fine.
@@ -145,7 +134,11 @@ def run(argv=None):
     if args.reconcile:
         return _reconcile(config)
 
-    mode = TradingMode.PAPER
+    # A flag, never config (design section 7, item 1): LIVE has to be asked
+    # for by whoever runs the process, so a config change alone can never
+    # start sending orders. Opened 2026-09-28, after step [10] placed and
+    # settled one share and one amount order for real (SHY, 9/22 and 9/23).
+    mode = TradingMode.LIVE if args.live else TradingMode.PAPER
 
     if not config.trading.enabled:
         print("매매가 비활성화되어 있습니다. config.yaml의 trading.enabled를 켜세요.")
@@ -198,6 +191,19 @@ def run(argv=None):
             f"    세션 {ctx.session_date} · 보유 {len(ctx.positions)}종목 · "
             f"시세 {len(ctx.prices)}건 · 이 세션 주문 {ctx.daily_usage.order_count}건"
         )
+        # A symbol whose refresh failed stops a day short of the session and
+        # nothing else says so - the loader skips a failed fetch in silence.
+        # Printed because a stale benchmark is exactly what repeated the
+        # 2026-09-21 weekly buy on 9/23; the strategy now stands down on it,
+        # and this line is how a reader learns why a run did nothing.
+        stale = sorted(
+            symbol
+            for symbol in universe_symbols
+            if (history.get(symbol) is None)
+            or (history[symbol].last_date or ctx.session_date) < ctx.session_date
+        )
+        if stale:
+            print(f"!!! 세션 {ctx.session_date}보다 뒤처진 시세 {len(stale)}종목: {', '.join(stale)}")
         # Named, not counted: a paused symbol changes what this run can do,
         # and "2종목 보류" would leave the reader to guess which two.
         for symbol, reason in sorted((ctx.blocked_symbols or {}).items()):
