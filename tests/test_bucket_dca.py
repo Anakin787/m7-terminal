@@ -455,3 +455,25 @@ def test_only_the_strategys_own_shares_are_ever_sold():
     sells = [s for s in strategy().evaluate(ctx) if s.side == SIDE_SELL]
 
     assert [(s.symbol, s.quantity) for s in sells] == [("DDD", D("5"))]
+
+
+# ------------------------------------------------------- stale benchmark
+
+
+def test_a_benchmark_a_day_behind_the_session_stands_the_run_down():
+    """2026-09-23: QQQ's refresh failed, SHY's had not.
+
+    The run's session came from SHY (a Tuesday), ``today`` from QQQ (still
+    Monday, the rebalance day), and the week's buys were proposed again
+    under the new session's order ids, where nothing could dedupe them.
+    """
+    history = history_for({"AAA": "0.02", "BBB": "0.015", "GRW": "0.01"})
+    assert strategy().evaluate(context(datetime(2025, 3, 3, 10), history))  # Monday acts
+
+    bench = SMALL.benchmark
+    ahead = {s: h for s, h in history_for({}, n=42).items() if s != bench}
+    stale = {**ahead, bench: history[bench]}
+    ctx = context(datetime(2025, 3, 4, 10), stale)
+    assert ctx.session_date > stale[bench].last_date
+
+    assert strategy().evaluate(ctx) == []

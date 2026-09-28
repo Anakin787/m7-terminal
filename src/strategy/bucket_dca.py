@@ -48,6 +48,7 @@ from src.strategy.momentum_dca import (
     ONE,
     MomentumDcaStrategy,
     StrategyParamError,
+    _benchmark_behind,
     _dec,
     _entry_meta,
 )
@@ -380,6 +381,8 @@ class BucketDcaStrategy(MomentumDcaStrategy):
 
         benchmark_history = ctx.bars(p.benchmark)
         session_date = benchmark_history.last_date if benchmark_history is not None else None
+        if _benchmark_behind(ctx, session_date):
+            return []  # see _benchmark_behind: a stale benchmark re-decides a past day
         today = session_date or (ctx.now.date() if hasattr(ctx.now, "date") else ctx.now)
         trend_up, bench_closes = self._trend(benchmark_history, today, p)
         if trend_up is None:

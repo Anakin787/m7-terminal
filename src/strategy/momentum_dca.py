@@ -215,6 +215,22 @@ MomentumDcaParams._FIELDS = {
 }
 
 
+def _benchmark_behind(ctx, benchmark_date):
+    """Is the benchmark's newest bar older than the session this run acts on?
+
+    ``today`` comes from the benchmark's last bar, but the run's session -
+    and with it every order id and daily limit - is the newest bar across
+    *all* symbols (``session_date_of``). When one refresh fails and another
+    succeeds the two disagree, and the strategy re-decides a day that has
+    already been acted on under a new session's ids, which nothing dedupes.
+    That happened on 2026-09-23: Yahoo returned nothing for QQQ, SHY had
+    been fetched an hour earlier, and the run proposed Monday's weekly buys
+    a second time as session 9/22. Doing nothing is the safe reading of a
+    stale benchmark - the next run with fresh bars catches up.
+    """
+    return benchmark_date is not None and benchmark_date < ctx.session_date
+
+
 def _entry_date(entry):
     from src.strategy.bars import as_date
 
@@ -312,6 +328,8 @@ class MomentumDcaStrategy(Strategy):
         # bar *is* that session date, and in the backtest it equals
         # ``ctx.now``'s date exactly, so this changes nothing there.
         session_date = benchmark_history.last_date if benchmark_history is not None else None
+        if _benchmark_behind(ctx, session_date):
+            return []
         today = session_date or (ctx.now.date() if hasattr(ctx.now, "date") else ctx.now)
         trend_up, bench_closes = self._trend(benchmark_history, today, p)
         if trend_up is None:
