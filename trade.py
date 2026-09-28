@@ -26,7 +26,8 @@ from src.data.cache import BarCache
 from src.data.loader import HistoryLoader
 from src.data.yahoo import YahooBarSource
 from src.execution.context import build_context
-from src.execution.executor import OrderExecutor
+from src.execution.executor import STATUS_FAILED, STATUS_UNKNOWN, OrderExecutor
+from src.execution.incident import describe_exception, hold_trading
 from src.execution.reconciler import Reconciler
 from src.execution.risk import RiskGate
 from src.pipeline import PortfolioService
@@ -253,18 +254,57 @@ def run(argv=None):
             price_limits=ctx.price_limits,
             session_date=ctx.session_date,
         )
-        for intent, signal_id in approved:
+        for position, (intent, signal_id) in enumerate(approved):
             record = executor.submit(intent, signal_id=signal_id)
             note = " (중복, 재발주 안 함)" if record.duplicate else ""
             print(
                 f"    {record.client_order_id}: {record.status}{note}"
                 f"{' · ' + record.detail if record.detail and not record.duplicate else ''}"
             )
+            if mode is TradingMode.LIVE and _unexplained(record):
+                # The rest of this run's orders are not sent: whatever made
+                # this one come back wrong has not been understood, and the
+                # next one would meet it too.
+                left = [i.client_order_id or i.symbol for i, _ in approved[position + 1 :]]
+                findings = [(
+                    record.client_order_id,
+                    f"{record.status} · {record.error_code or '-'} · {record.detail}",
+                )]
+                if left:
+                    findings.append(("미전송", f"이후 주문 {len(left)}건 전송 안 함: {', '.join(left)}"))
+                hold_trading(
+                    store,
+                    config.trading.kill_switch_path,
+                    f"주문 {record.client_order_id} 결과를 해석할 수 없음 ({record.status})",
+                    findings,
+                    source="trade.py --live",
+                    actor=HOLD_ACTOR,
+                )
+                break
         print(f">>> 신호 {len(signals)}건 · 승인 {len(approved)}건 · 거부 {len(signals) - len(approved)}건")
     finally:
         service.close()
 
     return EXIT_OK
+
+
+#: Who a hold is attributed to in the kill switch and the audit log.
+HOLD_ACTOR = "m7-trade (자동)"
+
+
+def _unexplained(record):
+    """Did this order end in a state nobody planned for?
+
+    ``unknown`` means the request went out and no answer came back - the
+    order may exist. A ``failed`` outside ``TERMINAL_CODES`` is an error code
+    this project has never seen. A known rejection (``terminal``) or a
+    duplicate the store already had is expected and holds nothing.
+    """
+    if record.duplicate:
+        return False
+    if record.status == STATUS_UNKNOWN:
+        return True
+    return record.status == STATUS_FAILED and not record.terminal
 
 
 def _reconcile(config):
@@ -285,6 +325,15 @@ def _reconcile(config):
 
     for line in results:
         print(f"    {line}")
+    if reconciler.anomalies:
+        hold_trading(
+            store,
+            config.trading.kill_switch_path,
+            f"미체결 주문 {len(reconciler.anomalies)}건의 상태를 확인할 수 없음",
+            reconciler.anomalies,
+            source="trade.py --reconcile",
+            actor=HOLD_ACTOR,
+        )
     return EXIT_OK
 
 
@@ -304,13 +353,55 @@ def main(argv=None):
         return EXIT_UNEXPECTED
     except TossError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
+        _hold_after_crash(argv, exc)
         return EXIT_TOSS_ERROR
     except Exception as exc:  # noqa: BLE001 - top level guard for the batch job
         print(f"ERROR: 예기치 못한 오류 - {exc}", file=sys.stderr)
         import traceback
 
         traceback.print_exc()
+        _hold_after_crash(argv, exc)
         return EXIT_UNEXPECTED
+
+
+def _hold_after_crash(argv, exc):
+    """A LIVE run that died mid-way holds trading until someone looks.
+
+    The run may have stopped between two orders, or between sending one and
+    recording its answer, and the next scheduled run would start from that
+    half-written state without anyone having read why. PAPER runs and
+    ``--dry-run`` send nothing, so they hold nothing - a crash there is a
+    bug to fix, not a position at risk. ``--reconcile`` is always LIVE.
+
+    Never raises: nothing here may replace the original error.
+    """
+    try:
+        args = parse_args(argv)
+    except BaseException:  # noqa: BLE001 - argparse exits on bad input
+        return
+    if args.dry_run or not (args.live or args.reconcile):
+        return
+
+    try:
+        path = load_config().trading.kill_switch_path
+    except Exception:  # noqa: BLE001 - fall back to the default path
+        from src.config import TradingConfig
+
+        path = TradingConfig().kill_switch_path
+    try:
+        store = Store()
+    except Exception as store_exc:  # noqa: BLE001
+        print(f"!!! Firestore 연결 실패 - 로컬 킬 스위치만 발동합니다: {store_exc}", file=sys.stderr)
+        store = None
+
+    hold_trading(
+        store,
+        path,
+        f"실행 중 예기치 못한 오류 ({type(exc).__name__})",
+        [("trade.py " + " ".join(argv if argv is not None else sys.argv[1:]), describe_exception(exc))],
+        source="trade.py --reconcile" if args.reconcile else "trade.py --live",
+        actor=HOLD_ACTOR,
+    )
 
 
 if __name__ == "__main__":

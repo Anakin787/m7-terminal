@@ -179,9 +179,17 @@ class Reconciler:
         self.oco_expire_days = oco_expire_days
         self.oco_stop_loss_slippage = oco_stop_loss_slippage
         self.clock = clock or (lambda: datetime.now())
+        #: ``[(client_order_id, message), ...]`` from the last :meth:`run` -
+        #: orders whose state this pass could not make sense of, as opposed
+        #: to ones merely not settled yet. The caller holds trading on them
+        #: (src/execution/incident.py). Each order is reported once: the row
+        #: is stamped ``incident_at``, so a poll every thirty minutes does not
+        #: re-raise the same order all night.
+        self.anomalies = []
 
     def run(self):
         """Reconcile every open order. Returns a list of outcome strings."""
+        self.anomalies = []
         results = []
         for order in self.store.pending_orders(mode=TradingMode.LIVE.value):
             results.append(self._reconcile_one(order))
@@ -201,9 +209,10 @@ class Reconciler:
             # "failed" would assert that no shares were bought. Said out loud
             # instead, because an order stuck here needs a human, not another
             # poll in thirty minutes.
-            return (
+            return self._anomaly(
+                order,
                 f"{client_order_id}: 브로커 주문 이력에 없습니다 — "
-                "접수되지 않았을 수 있습니다. 확인이 필요합니다."
+                "접수되지 않았을 수 있습니다. 확인이 필요합니다.",
             )
 
         payload = _with_execution(payload)
@@ -242,9 +251,10 @@ class Reconciler:
             # Not marked filled - that would assert shares with no fill row
             # behind them - but not left to poll silently either, which is
             # how the first live order sat as ``submitted`` unnoticed.
-            return (
+            return self._anomaly(
+                order,
                 f"{client_order_id}: 브로커는 체결 완료로 보고했지만 체결 수량을 "
-                "읽지 못했습니다 — 응답 형태 확인이 필요합니다."
+                f"읽지 못했습니다 — 응답 형태 확인이 필요합니다. 응답: {payload}",
             )
 
         oco_note = ""
@@ -255,6 +265,14 @@ class Reconciler:
             f"{client_order_id}: {new_status or order.get('status')}"
             f"{f' (체결 {newly_filled})' if newly_filled else ''}{oco_note}"
         )
+
+    def _anomaly(self, order, message):
+        if not order.get("incident_at"):
+            self.anomalies.append((order["client_order_id"], message))
+            self.store.update_order(
+                order["client_order_id"], incident_at=self.clock().isoformat()
+            )
+        return message
 
     def _fetch(self, order):
         """The broker's current view of one order.

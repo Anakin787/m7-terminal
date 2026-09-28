@@ -581,6 +581,7 @@ class Store:
         allowed = {
             "order_id", "status", "error_code", "signal_id",
             "filled_quantity", "oco_client_order_id", "oco_status",
+            "incident_at",
         }
         unknown = set(fields) - allowed
         if unknown:

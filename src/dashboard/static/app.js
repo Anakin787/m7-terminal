@@ -1620,6 +1620,7 @@ function styleRangeButtons() {
 const AUDIT_LABELS = {
   baseline: "기준선", universe: "유니버스", strategies: "전략 목록", strategy_params: "전략 파라미터",
   limits: "리스크 한도", veto: "AI 보류", candidate: "AI 제안", kill_switch: "킬 스위치",
+  incident: "매매 보류",
 };
 
 // How the change time was recovered decides how much it can be trusted, so
@@ -1644,13 +1645,20 @@ function auditChangeLine(change) {
   const target = document.createElement("span");
   target.className = "text-on-surface shrink-0";
   target.textContent = change.target;
-  const arrow = document.createElement("span");
-  arrow.className = "text-on-surface-variant/70 break-all";
-  arrow.textContent = `${before} → ${after}`;
-  row.append(target, arrow);
+  row.append(target);
+  // A hold's "조치" line has no before/after - an empty arrow would read as
+  // a change to nothing.
+  if (before || after) {
+    const arrow = document.createElement("span");
+    arrow.className = "text-on-surface-variant/70 break-all";
+    arrow.textContent = `${before} → ${after}`;
+    row.append(arrow);
+  }
   if (change.evidence) {
     const evidence = document.createElement("span");
-    evidence.className = "text-on-surface-variant/50 italic break-all";
+    // pre-wrap: a hold's evidence carries a traceback, and one line of it is
+    // unreadable.
+    evidence.className = "text-on-surface-variant/50 italic break-all whitespace-pre-wrap";
     evidence.textContent = `(근거: ${change.evidence})`;
     row.appendChild(evidence);
   }
@@ -1737,8 +1745,11 @@ async function loadAudit() {
     const categoryCell = document.createElement("td");
     categoryCell.className = "px-4 py-3 whitespace-nowrap";
     const category = document.createElement("span");
-    category.className = "text-[10px] px-1.5 py-0.5 rounded border border-outline-variant/50 " +
-      "bg-surface-container-highest text-on-surface-variant";
+    // A hold is the one entry that asks the reader to act, so it is the one
+    // that is not grey.
+    category.className = "text-[10px] px-1.5 py-0.5 rounded border " + (entry.category === "incident"
+      ? "border-error/60 bg-error/10 text-error font-semibold"
+      : "border-outline-variant/50 bg-surface-container-highest text-on-surface-variant");
     category.textContent = AUDIT_LABELS[entry.category] || entry.category;
     categoryCell.appendChild(category);
 

@@ -304,3 +304,125 @@ def test_reconcile_does_not_touch_strategies_or_the_risk_gate(
     monkeypatch.setattr(trade, "build_trading_api", lambda *a, **k: FakeLiveTrading())
 
     assert trade.run(["--reconcile"]) == trade.EXIT_OK
+
+
+# ------------------------------------------------ holding LIVE on the unknown
+
+
+from src.execution.risk import kill_switch_active  # noqa: E402
+from src.toss.errors import TossApiError  # noqa: E402
+
+
+class FailingLiveOrders(FakeLiveOrders):
+    def __init__(self, error):
+        super().__init__()
+        self.error = error
+
+    def place_order(self, body):
+        self.bodies.append(body)
+        raise self.error
+
+
+def _live_with(monkeypatch, trading):
+    monkeypatch.setattr(trade, "build_trading_api", lambda *a, **k: trading)
+
+
+def _incidents(store):
+    return store.audit_page(category="incident")["entries"]
+
+
+def test_a_lost_order_response_holds_live_trading_and_says_why(
+    wired, monkeypatch, firestore_client, capsys
+):
+    _live_with(monkeypatch, FailingLiveOrders(TossApiError(0, "network-error", "timeout")))
+
+    assert trade.run(["--live"]) == trade.EXIT_OK
+
+    store = Store(firestore_client)
+    assert kill_switch_active(wired.trading.kill_switch_path, store=store)
+    [entry] = _incidents(store)
+    assert "unknown" in entry["summary"]
+    assert entry["actor"] == trade.HOLD_ACTOR
+    assert any(c["target"] == "조치" for c in entry["changes"])
+    kinds = {e["category"] for e in store.audit_page()["entries"]}
+    assert {"incident", "kill_switch"} <= kinds
+    assert "LIVE 매매를 보류했습니다" in capsys.readouterr().err
+
+
+def test_an_error_code_nobody_has_seen_holds_live_trading(wired, monkeypatch, firestore_client):
+    _live_with(monkeypatch, FailingLiveOrders(TossApiError(400, "never-seen-this", "?")))
+
+    trade.run(["--live"])
+
+    store = Store(firestore_client)
+    assert kill_switch_active(wired.trading.kill_switch_path, store=store)
+    assert len(_incidents(store)) == 1
+
+
+def test_a_known_rejection_holds_nothing(wired, monkeypatch, firestore_client):
+    _live_with(
+        monkeypatch,
+        FailingLiveOrders(TossApiError(400, "insufficient-buying-power", "no cash")),
+    )
+
+    trade.run(["--live"])
+
+    store = Store(firestore_client)
+    assert not kill_switch_active(wired.trading.kill_switch_path, store=store)
+    assert _incidents(store) == []
+
+
+def test_a_live_run_that_crashes_holds_trading(wired, monkeypatch, firestore_client, capsys):
+    _live_with(monkeypatch, FailingLiveOrders(RuntimeError("boom")))
+
+    assert trade.main(["--live"]) == trade.EXIT_UNEXPECTED
+
+    store = Store(firestore_client)
+    assert kill_switch_active(wired.trading.kill_switch_path, store=store)
+    [entry] = _incidents(store)
+    evidence = entry["changes"][0]["evidence"]
+    assert "RuntimeError: boom" in evidence
+    assert "in place_order" in evidence  # the frame it died in, not just the message
+
+
+def test_a_paper_crash_holds_nothing(wired, monkeypatch, firestore_client):
+    def explode(*a, **k):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(trade, "build_trading_api", explode)
+
+    assert trade.main([]) == trade.EXIT_UNEXPECTED
+
+    store = Store(firestore_client)
+    assert not kill_switch_active(wired.trading.kill_switch_path, store=store)
+    assert _incidents(store) == []
+
+
+def test_an_unreadable_fill_holds_trading_once_not_every_poll(
+    tmp_path, monkeypatch, firestore_client
+):
+    config = app_config(tmp_path)
+    monkeypatch.setattr(trade, "load_config", lambda: config)
+
+    class Unreadable(FakeLiveTrading):
+        def get_order(self, order_id):
+            return {"status": "FILLED", "execution": {"qty": "1"}}
+
+    monkeypatch.setattr(trade, "build_trading_api", lambda *a, **k: Unreadable())
+    store = Store(firestore_client)
+    store.client.collection("orders").document("entry-1").set(
+        {
+            "ts": "2026-09-29T23:35:00", "strategy": "s", "symbol": "SHY",
+            "side": "BUY", "order_type": "MARKET", "quantity": None,
+            "amount": "20", "price": None, "currency": "USD",
+            "status": "submitted", "mode": "live", "order_id": "TOSS-1",
+            "filled_quantity": "0", "updated_at": "2026-09-29T23:35:00",
+        }
+    )
+
+    trade.run(["--reconcile"])
+    trade.run(["--reconcile"])
+
+    assert kill_switch_active(config.trading.kill_switch_path, store=store)
+    [entry] = _incidents(store)
+    assert entry["changes"][0]["target"] == "entry-1"
