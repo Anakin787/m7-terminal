@@ -5,12 +5,14 @@ import os
 import tempfile
 
 import pytest
+import requests
 
 from src.toss.client import TossClient
 from src.toss.errors import (
     TossAuthError,
     TossForbiddenError,
     TossNotFoundError,
+    TossServerError,
     TossWriteBlockedError,
 )
 from src.toss.ratelimit import RateLimiter
@@ -31,12 +33,15 @@ class FakeSession:
 
     def __init__(self):
         self.token_responses = []
+        self.token_exceptions = []
         self.responses = []
         self.token_calls = 0
         self.requests = []
 
     def post(self, url, data=None, headers=None, timeout=None):
         self.token_calls += 1
+        if self.token_exceptions:
+            raise self.token_exceptions.pop(0)
         if self.token_responses:
             return self.token_responses.pop(0)
         return FakeResponse(
@@ -153,6 +158,35 @@ def test_oauth_style_token_error_does_not_crash(cache_path):
         client.get("/api/v1/accounts")
     assert excinfo.value.code == "invalid_client"
     assert "client_secret" in excinfo.value.message
+
+
+def test_token_issuance_retries_after_network_error(cache_path):
+    session = FakeSession()
+    session.token_exceptions = [requests.exceptions.ReadTimeout("timed out")]
+    client = make_client(session, cache_path)
+
+    assert client.get("/api/v1/accounts") == {"ok": True}
+    assert session.token_calls == 2
+    assert client.token_issue_count == 1
+    assert client.recorded_sleeps  # backoff was applied before the retry
+
+
+def test_token_issuance_gives_up_after_exhausting_retries(cache_path):
+    session = FakeSession()
+    session.token_exceptions = [
+        requests.exceptions.ReadTimeout("timed out"),
+        requests.exceptions.ReadTimeout("timed out"),
+        requests.exceptions.ReadTimeout("timed out"),
+        requests.exceptions.ReadTimeout("timed out"),
+    ]
+    client = make_client(session, cache_path)
+
+    with pytest.raises(TossServerError) as excinfo:
+        client.get("/api/v1/accounts")
+    assert excinfo.value.code == "network-error"
+    assert session.token_calls == 4  # 1 initial attempt + 3 retries
+    assert client.token_issue_count == 0
+    assert len(client.recorded_sleeps) == 3
 
 
 def test_429_waits_for_retry_after(cache_path):

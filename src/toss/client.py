@@ -134,17 +134,28 @@ class TossClient:
 
     def _issue_token(self):
         """Request a fresh token. Invalidates any token issued earlier."""
-        self.rate_limiter.acquire("AUTH")
-        response = self.session.post(
-            f"{self.base_url}{TOKEN_PATH}",
-            data={
-                "grant_type": "client_credentials",
-                "client_id": self.client_id,
-                "client_secret": self.client_secret,
-            },
-            headers={"Content-Type": "application/x-www-form-urlencoded"},
-            timeout=self.timeout,
-        )
+        attempt = 0
+        while True:
+            self.rate_limiter.acquire("AUTH")
+            try:
+                response = self.session.post(
+                    f"{self.base_url}{TOKEN_PATH}",
+                    data={
+                        "grant_type": "client_credentials",
+                        "client_id": self.client_id,
+                        "client_secret": self.client_secret,
+                    },
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=self.timeout,
+                )
+            except requests.RequestException as exc:
+                if attempt >= MAX_RETRIES:
+                    raise TossServerError(0, "network-error", str(exc)) from exc
+                attempt += 1
+                self._sleep(_backoff(attempt))
+                continue
+            break
+
         payload = _safe_json(response)
         if response.status_code >= 400:
             raise error_from_response(response.status_code, payload, response.headers)
