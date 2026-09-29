@@ -192,7 +192,9 @@ class OrderExecutor:
         client_order_id = intent.client_order_id
 
         if code == "idempotency-key-conflict":
-            self._finish(client_order_id, STATUS_FAILED, error_code=code)
+            self._finish(
+                client_order_id, STATUS_FAILED, error_code=code, detail=str(exc)
+            )
             raise ExecutorBug(
                 f"client_order_id '{client_order_id}'가 다른 내용의 주문으로 이미 "
                 f"사용됐습니다. ID 생성 로직이 깨졌을 가능성이 높아 실행을 중단합니다. "
@@ -234,7 +236,7 @@ class OrderExecutor:
             client_order_id,
             STATUS_FAILED,
             error_code=code,
-            detail=str(exc),
+            detail=_describe(exc),
             terminal=code in TERMINAL_CODES,
             blacklisted=code in BLACKLIST_CODES,
         )
@@ -296,6 +298,11 @@ class OrderExecutor:
             fields["order_id"] = order_id
         if error_code:
             fields["error_code"] = error_code
+        # The code alone says which rule fired, not why: prerequisite-required
+        # is the same string whether an education is missing or a deposit is
+        # short. The broker's own message is the only place that is written.
+        if detail:
+            fields["error_detail"] = detail
         self.store.update_order(client_order_id, **fields)
         return OrderRecord(
             client_order_id=client_order_id,
@@ -306,6 +313,15 @@ class OrderExecutor:
             blacklisted=blacklisted,
             terminal=terminal,
         )
+
+
+def _describe(exc):
+    """The broker's message, request id and any ``data`` payload, as text."""
+    text = str(exc)
+    data = getattr(exc, "data", None)
+    if data:
+        text += f" data={data}"
+    return text
 
 
 #: Spellings Toss has used for the band in a price-out-of-range envelope.

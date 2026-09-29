@@ -579,7 +579,7 @@ class Store:
     def update_order(self, client_order_id, **fields):
         """Patch an order document. Unknown columns are refused, not ignored."""
         allowed = {
-            "order_id", "status", "error_code", "signal_id",
+            "order_id", "status", "error_code", "error_detail", "signal_id",
             "filled_quantity", "oco_client_order_id", "oco_status",
             "incident_at",
         }

@@ -478,6 +478,29 @@ def test_a_definite_rejection_is_still_failed(firestore_client):
     assert record.status not in Store._OPEN_ORDER_STATUSES
 
 
+def test_the_brokers_message_is_stored_with_the_failed_order(firestore_client):
+    """The code alone cannot say *which* prerequisite is missing."""
+    engine, _ = executor(
+        firestore_client,
+        FakeTrading(
+            outcomes=[
+                TossApiError(
+                    422, "prerequisite-required", "교육 이수가 필요합니다",
+                    request_id="req-1", data={"missing": "education"},
+                )
+            ]
+        ),
+    )
+
+    record = engine.submit(intent())
+
+    stored = engine.store.order_by_client_id(record.client_order_id)
+    assert stored["error_code"] == "prerequisite-required"
+    assert "교육 이수가 필요합니다" in stored["error_detail"]
+    assert "req-1" in stored["error_detail"]
+    assert "education" in stored["error_detail"]
+
+
 def test_an_unanswered_order_is_not_re_sent_on_the_next_run(firestore_client):
     """The id is already taken, so the retry finds it rather than ordering."""
     shared = store(firestore_client)
