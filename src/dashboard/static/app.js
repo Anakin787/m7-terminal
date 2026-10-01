@@ -54,7 +54,7 @@ function savePageSize(key, size) {
   try { window.localStorage.setItem(key, String(size)); } catch { /* not worth an error */ }
 }
 
-const state = { view: "overview", range: "3M", allocBy: "market", history: null,
+const state = { view: "overview", range: "3M", allocBy: "bucket", history: null,
                 editingName: false, auditCategory: "", trading: null, health: null,
                 engineOpen: false, auditPage: 0, reportsPage: 0,
                 hcSymbol: null, hcRange: "3M", hcData: null,
@@ -649,7 +649,7 @@ function renderDonut(segments, legendSegments) {
     const gap = segments.length > 1 ? 2 : 0;
     markup += `<circle cx="50" cy="50" r="${R}" fill="none" stroke="${color}" stroke-width="12"
       stroke-dasharray="${Math.max(0, length - gap).toFixed(2)} ${(CIRC - length + gap).toFixed(2)}"
-      stroke-dashoffset="${(-offset).toFixed(2)}"><title>${segment.label}: ${(segment.share * 100).toFixed(1)}%</title></circle>`;
+      stroke-dashoffset="${(-offset).toFixed(2)}" data-i="${segments.indexOf(segment)}" style="cursor:pointer"></circle>`;
     offset += length;
   });
 
@@ -683,9 +683,44 @@ function renderDonut(segments, legendSegments) {
   });
 
   svg.innerHTML = markup;
+  wireDonutTooltip(svg, segments);
   const lead = segments[0] || rows[0];
   $("donut-label").textContent = lead.label || lead.key;
   $("donut-value").textContent = (lead.share * 100).toFixed(0) + "%";
+}
+
+function describeSegment(segment) {
+  const name = segment.unmanaged ? `${segment.label} (\uacc4\ud68d \ubc16)` : segment.label;
+  const lines = [`<div class="font-bold text-on-surface">${escapeHtml(name)}</div>`,
+    `<div>\ube44\uc911 ${(segment.share * 100).toFixed(1)}%</div>`,
+    `<div>\uae08\uc561 \u20a9${fmtInt(segment.value_krw)}</div>`];
+  if (segment.target != null) {
+    const gap = segment.share - segment.target;
+    lines.push(`<div>\ubaa9\ud45c ${(segment.target * 100).toFixed(0)}% (${gap >= 0 ? "+" : "-"}${(Math.abs(gap) * 100).toFixed(1)}%p)</div>`);
+  }
+  return lines.join("");
+}
+
+function escapeHtml(text) {
+  return String(text).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+
+function wireDonutTooltip(svg, segments) {
+  const tooltip = $("donut-tooltip");
+  const host = svg.parentElement;
+  svg.querySelectorAll("circle[data-i]").forEach((circle) => {
+    const segment = segments[Number(circle.dataset.i)];
+    circle.addEventListener("mousemove", (event) => {
+      tooltip.innerHTML = describeSegment(segment);
+      tooltip.hidden = false;
+      const box = host.getBoundingClientRect();
+      const left = event.clientX - box.left + 12;
+      const maxLeft = box.width - tooltip.offsetWidth;
+      tooltip.style.left = Math.max(0, Math.min(left, maxLeft)) + "px";
+      tooltip.style.top = Math.max(0, event.clientY - box.top - tooltip.offsetHeight - 8) + "px";
+    });
+    circle.addEventListener("mouseleave", () => { tooltip.hidden = true; });
+  });
 }
 
 /* ------------------------------------------------------------- AI vetoes */

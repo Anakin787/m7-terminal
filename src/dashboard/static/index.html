@@ -294,9 +294,9 @@
           <div class="xl:col-span-4 bg-surface-container rounded-lg border border-outline-variant/50 p-4 flex flex-col">
             <h3 class="text-headline-md font-bold text-on-surface mb-4">Allocation</h3>
             <div class="flex border-b border-outline-variant/50 mb-6 overflow-x-auto" id="alloc-tabs">
+              <button data-by="bucket" class="alloc-tab">By Plan</button>
               <button data-by="market" class="alloc-tab">By Market (KR/US)</button>
               <button data-by="currency" class="alloc-tab">By Currency</button>
-              <button data-by="bucket" class="alloc-tab">By Plan</button>
             </div>
             <div class="flex-1 flex flex-col items-center justify-center">
               <div class="relative w-48 h-48">
@@ -305,6 +305,7 @@
                   <span class="font-data-mono text-sm text-on-surface-variant" id="donut-label">—</span>
                   <span class="text-xl font-bold text-on-surface" id="donut-value">—</span>
                 </div>
+                <div id="donut-tooltip" hidden class="absolute pointer-events-none z-20 bg-surface-container-high border border-outline-variant rounded px-3 py-2 shadow-lg font-data-mono text-xs whitespace-nowrap"></div>
               </div>
               <!-- Sized to the tallest tab. The three groupings produce one
                    row (By Market, By Currency) or four (By Plan: three
