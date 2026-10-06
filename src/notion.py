@@ -21,6 +21,8 @@ DATE_PROP = "Date"
 REQUIRED_PROPS_HINT = {TITLE_PROP: "title", DATE_PROP: "date"}
 
 #: Shown in the report instead of the bare bucket names.
+_MAX_BLOCKS_PER_REQUEST = 100
+
 _BUCKET_LABELS = {
     BUCKET_SAFE: "🛡 안전자산",
     BUCKET_CORE: "📊 일반",
@@ -242,11 +244,18 @@ class NotionReporter:
                         self._create_bullet_block(item["title"], item["link"])
                     )
 
+        # Notion takes at most 100 blocks per request: create the page with
+        # the first batch and append the rest in order.
         page = self.client.pages.create(
             parent=self._parent(),
             properties=self._properties(title),
-            children=children_blocks,
+            children=children_blocks[:_MAX_BLOCKS_PER_REQUEST],
         )
+        for start in range(_MAX_BLOCKS_PER_REQUEST, len(children_blocks), _MAX_BLOCKS_PER_REQUEST):
+            self.client.blocks.children.append(
+                block_id=page.get("id"),
+                children=children_blocks[start:start + _MAX_BLOCKS_PER_REQUEST],
+            )
         print(f"[Notion] Successfully created report: {title}")
         return {"page_id": page.get("id"), "url": page.get("url"), "title": title}
 

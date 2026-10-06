@@ -53,8 +53,22 @@ class FakePages:
         return {"id": "new-page-id", "url": "https://notion.so/new-page-id"}
 
 
+class FakeBlockChildren:
+    def __init__(self):
+        self.appended = []
+
+    def append(self, **kwargs):
+        self.appended.append(kwargs)
+
+
+class FakeBlocks:
+    def __init__(self):
+        self.children = FakeBlockChildren()
+
+
 class FakeClient:
     def __init__(self, databases=None, pages=None):
+        self.blocks = FakeBlocks()
         self.databases = databases or FakeEndpoint(error_code="object_not_found")
         self.pages = pages or FakePages(error_code="object_not_found")
 
@@ -244,3 +258,18 @@ def test_an_empty_universe_review_adds_no_section(snapshot):
     )
 
     assert "AI Universe Review" not in str(pages.created["children"])
+
+
+def test_blocks_past_the_per_request_limit_are_appended(snapshot):
+    """Notion rejects more than 100 children in one request; the rest follow."""
+    pages = FakePages({"properties": {}})
+    client = FakeClient(pages=pages)
+    news = {"general": [{"title": f"n{i}", "link": "https://x"} for i in range(230)]}
+
+    NotionReporter(config_for(), client=client).create_report(snapshot, news)
+
+    appended = client.blocks.children.appended
+    assert len(pages.created["children"]) == 100
+    assert all(len(call["children"]) <= 100 for call in appended)
+    assert all(call["block_id"] == "new-page-id" for call in appended)
+    assert len(appended) == 2
