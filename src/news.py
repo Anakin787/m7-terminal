@@ -1,6 +1,18 @@
-import feedparser
+import re
 import urllib.parse
 from datetime import datetime
+
+import feedparser
+
+# A bare ticker is a common word or a name to a news search: SHY (a Treasury
+# ETF) returns "Super Shy" K-pop headlines. Searches for one are steered to
+# markets and every headline must pass the check below before it is reported.
+_TICKER = re.compile(r"[A-Z][A-Z.\-]{0,5}")
+_FINANCE_TERMS = (
+    "주가", "주식", "ETF", "증시", "투자", "종목", "배당", "실적", "상장", "펀드",
+    "국채", "금리", "매수", "매도", "시총", "시가총액", "나스닥", "월가", "목표가",
+    "stock", "shares", "etf", "nasdaq", "treasury", "earnings", "dividend",
+)
 
 
 def portfolio_keywords(snapshot):
@@ -28,6 +40,12 @@ def portfolio_keywords(snapshot):
     return seen
 
 
+def _is_about_the_ticker(title, ticker):
+    """The headline names the ticker and reads as a market story."""
+    lowered = title.lower()
+    return ticker.lower() in lowered and any(t.lower() in lowered for t in _FINANCE_TERMS)
+
+
 class NewsFetcher:
     def __init__(self, config):
         self.keywords = config.get('news', {}).get('keywords', [])
@@ -43,7 +61,13 @@ class NewsFetcher:
         }
 
         for keyword in self.keywords:
-            results["keywords"][keyword] = self._fetch_google_news(keyword)
+            if _TICKER.fullmatch(keyword):
+                found = self._fetch_google_news(f"{keyword} 주가 OR ETF OR 주식")
+                results["keywords"][keyword] = [
+                    item for item in found if _is_about_the_ticker(item["title"], keyword)
+                ]
+            else:
+                results["keywords"][keyword] = self._fetch_google_news(keyword)
 
         return results
 

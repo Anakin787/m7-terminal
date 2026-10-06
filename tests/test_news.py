@@ -1,5 +1,6 @@
 """portfolio_keywords() and NewsFetcher's keyword fan-out."""
 
+import urllib.parse
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -78,3 +79,29 @@ def test_fetch_daily_news_returns_a_section_per_keyword(monkeypatch):
     assert set(result["keywords"]) == {"삼성전자", "Apple Inc."}
     assert result["keywords"]["삼성전자"][0]["title"] == "한 종목 기사"
     assert result["keywords"]["삼성전자"][0]["source"] == "Test Wire"
+
+
+def test_a_ticker_search_drops_headlines_that_are_not_about_the_security(monkeypatch):
+    """SHY is a Treasury ETF; "Super Shy" is a K-pop song."""
+    calls = []
+    titles = [
+        "뉴진스 '슈퍼 샤이', 스포티파이 9억 스트리밍",
+        "뉴진스, 또 일냈다..'Super Shy' 스포티파이 9억 스트리밍 돌파",
+        "AI 생성 논란 호러소설 '샤이 걸(Shy Girl)' 출판 취소",
+        "단기 국채 ETF SHY 자금 유입 늘어",
+    ]
+
+    def fake_parse(url):
+        calls.append(url)
+        return SimpleNamespace(
+            entries=[FakeEntry(t, "https://example.com", "2026-10-06", "Wire") for t in titles]
+        )
+
+    monkeypatch.setattr("src.news.feedparser.parse", fake_parse)
+
+    result = NewsFetcher({"news": {"keywords": ["SHY", "삼성전자"]}}).fetch_daily_news()
+
+    assert [i["title"] for i in result["keywords"]["SHY"]] == ["단기 국채 ETF SHY 자금 유입 늘어"]
+    assert "ETF" in urllib.parse.unquote(calls[1])
+    # A name that is not a bare ticker is searched and kept as before.
+    assert len(result["keywords"]["삼성전자"]) == 4
