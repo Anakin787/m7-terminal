@@ -24,6 +24,32 @@ def _port_open(host, port, timeout=0.5):
         return sock.connect_ex((host, int(port))) == 0
 
 
+@pytest.fixture(autouse=True)
+def _never_reach_real_firestore(monkeypatch):
+    """Fail a test that builds a Firestore client with no emulator behind it.
+
+    ``firestore.Client()`` with no emulator host silently uses the machine's
+    credentials and the real project. A test that forgot the emulator fixture
+    (or ran alone, before the session fixture set the host) then reads and
+    writes production: on 2026-09-29 a ``--reconcile`` test settled five live
+    orders with fake fills that way. Checked when the client is built, not at
+    import, because the emulator host is set only once its fixture has run.
+    """
+    from google.cloud import firestore
+
+    real_init = firestore.Client.__init__
+
+    def guarded(self, *args, **kwargs):
+        if not os.environ.get("FIRESTORE_EMULATOR_HOST"):
+            raise RuntimeError(
+                "테스트가 에뮬레이터 없이 Firestore 클라이언트를 만들었습니다 — "
+                "firestore_client fixture를 쓰세요. 실계정 DB에 붙을 뻔했습니다."
+            )
+        real_init(self, *args, **kwargs)
+
+    monkeypatch.setattr(firestore.Client, "__init__", guarded)
+
+
 @pytest.fixture(scope="session")
 def firestore_emulator():
     host, port = EMULATOR_HOST.split(":")

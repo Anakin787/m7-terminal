@@ -282,7 +282,9 @@ def test_reconcile_settles_a_live_order_and_arms_its_bracket(
     assert "OCO 등록" in out
 
 
-def test_reconcile_with_nothing_pending_says_so(tmp_path, monkeypatch, capsys):
+def test_reconcile_with_nothing_pending_says_so(
+    tmp_path, monkeypatch, capsys, firestore_client
+):
     config = app_config(tmp_path)
     monkeypatch.setattr(trade, "load_config", lambda: config)
     monkeypatch.setattr(trade, "build_trading_api", lambda *a, **k: FakeLiveTrading())
