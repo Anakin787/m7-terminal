@@ -1,6 +1,7 @@
 """portfolio_keywords() and NewsFetcher's keyword fan-out."""
 
 import urllib.parse
+from dataclasses import replace
 from decimal import Decimal
 from types import SimpleNamespace
 
@@ -45,6 +46,23 @@ def test_portfolio_keywords_prefers_the_declared_underlying():
         positions=[position("TSLL", "Direxion Daily TSLA Bull 2X Shares", underlying="TSLA")]
     )
     assert portfolio_keywords(snapshot) == ["TSLA"]
+
+
+def test_portfolio_keywords_skips_funds():
+    # Treasury, gold and sector ETFs: asset-class headlines, not holding news.
+    etf = replace(position("SHY", "SHY"), security_type="ETF")
+    snapshot = PortfolioSnapshot(positions=[etf, position("GLD", "GLD"), position("AAPL", "애플")])
+
+    assert portfolio_keywords(snapshot, fund_symbols=["GLD"]) == ["애플"]
+
+
+def test_portfolio_keywords_keeps_a_fund_with_an_underlying():
+    tsll = replace(
+        position("TSLL", "Direxion Daily TSLA Bull 2X Shares", underlying="TSLA"),
+        security_type="ETF",
+    )
+
+    assert portfolio_keywords(PortfolioSnapshot(positions=[tsll])) == ["TSLA"]
 
 
 def test_portfolio_keywords_falls_back_to_name_without_an_underlying():

@@ -229,6 +229,18 @@ class NotionReporter:
                             f"{candidate.symbol} ({candidate.name}) — {candidate.reason}"
                         )
                     )
+            if universe_review.growth_candidates:
+                children_blocks.append(
+                    self._create_subheading_block(
+                        "🚀 미래성장 추천 종목 (검토용 · 자동 반영 안 됨)"
+                    )
+                )
+                for candidate in universe_review.growth_candidates:
+                    children_blocks.append(
+                        self._create_bullet_block(
+                            f"{candidate.symbol} ({candidate.name}) — {candidate.reason}"
+                        )
+                    )
 
         # 6. News
         children_blocks.append(self._create_heading_block("📰 Economic News"))

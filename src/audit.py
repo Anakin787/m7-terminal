@@ -41,6 +41,8 @@ import subprocess
 from datetime import datetime
 from pathlib import Path
 
+from src.strategy.universe import BUCKET_GROWTH
+
 #: Settings whose change alters what the engine is allowed to do. Anything
 #: outside this list (Notion token, news keywords, display names) is not
 #: audited - not because it does not matter, but because an audit log that
@@ -305,7 +307,9 @@ def review_entries(review, actor="AI universe review", detected_at=None):
     detected_at = detected_at or datetime.now().isoformat()
     entries = []
     vetoes = getattr(review, "vetoes", ()) or ()
-    candidates = getattr(review, "candidates", ()) or ()
+    candidates = tuple(getattr(review, "candidates", ()) or ()) + tuple(
+        getattr(review, "growth_candidates", ()) or ()
+    )
 
     if vetoes:
         entries.append(
@@ -345,7 +349,15 @@ def review_entries(review, actor="AI universe review", detected_at=None):
                 "summary": "편입 후보 제안(미반영): "
                 + ", ".join(c.symbol for c in candidates),
                 "changes": [
-                    {"target": c.symbol, "before": None, "after": c.reason}
+                    {
+                        "target": c.symbol,
+                        "before": None,
+                        "after": (
+                            f"[미래성장] {c.reason}"
+                            if getattr(c, "bucket", None) == BUCKET_GROWTH
+                            else c.reason
+                        ),
+                    }
                     for c in candidates
                 ],
             }

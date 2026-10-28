@@ -22,7 +22,7 @@ from src.notion import NotionReporter
 from src.pipeline import PortfolioService, apply_name_overrides
 from src.store.repo import Store
 from src.strategy.loader import load_strategies
-from src.strategy.universe import parse_universe
+from src.strategy.universe import BUCKET_GROWTH, KIND_INDEX_ETF, parse_universe
 from src.toss.errors import TossError
 from src.universe_review import UniverseReviewer
 
@@ -69,12 +69,17 @@ def _review_universe(config, snapshot, news_data, store):
     print(">>> AI universe review...")
     held = [p.symbol for p in snapshot.positions if p.symbol]
     universe = parse_universe(config.trading.universe)
-    review = reviewer.review(universe.symbols(), held, news_data)
+    review = reviewer.review(
+        universe.symbols(),
+        held,
+        news_data,
+        growth_symbols=[i.symbol for i in universe.by_bucket(BUCKET_GROWTH)],
+    )
     if review.error:
         print(f"    건너뜀: {review.error}")
         return None
 
-    if review.vetoes or review.candidates:
+    if not review.is_empty:
         store.save_universe_review(review, ttl_days=config.analyst.veto_ttl_days)
         store.save_audit_entries(review_entries(review))
     for veto in review.vetoes:
@@ -83,6 +88,11 @@ def _review_universe(config, snapshot, news_data, store):
         print(
             "    편입 후보(검토용): "
             + ", ".join(c.symbol for c in review.candidates)
+        )
+    if review.growth_candidates:
+        print(
+            "    미래성장 후보(검토용): "
+            + ", ".join(c.symbol for c in review.growth_candidates)
         )
     if not review.vetoes:
         print("    보류할 종목 없음 (정상)")
@@ -142,7 +152,14 @@ def run():
     #    and not only the general economy.
     print(">>> Fetching news...")
     keywords = list(config.news_keywords)
-    for name in portfolio_keywords(snapshot):
+    # ETFs and commodity funds get no section of their own; the user found
+    # asset-class headlines (Treasuries, gold, a sector) to be noise.
+    funds = [
+        i.symbol
+        for i in parse_universe(config.trading.universe)
+        if i.kind == KIND_INDEX_ETF
+    ]
+    for name in portfolio_keywords(snapshot, fund_symbols=funds):
         if name not in keywords:
             keywords.append(name)
     news_data = NewsFetcher({"news": {"keywords": keywords}}).fetch_daily_news()

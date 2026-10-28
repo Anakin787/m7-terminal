@@ -90,6 +90,10 @@ google_ai:
   universe_review: true
   max_vetoes: 3          # 한 번에 보류할 수 있는 최대 종목 수 (전량 정지 방지)
   max_candidates: 5
+  max_growth_candidates: 3   # "미래성장 추천 종목" 개수 (검토용, 자동 반영 안 됨)
+  # 일부러 뺀 종목. AI가 편입 후보로 다시 추천하지 않습니다.
+  excluded_candidates: []
+  # - RKLB
   veto_ttl_days: 7       # 이 기간이 지나면 보류는 자동 해제됩니다
 
 notion:

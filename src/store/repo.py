@@ -345,8 +345,12 @@ class Store:
                 "symbol": candidate.symbol,
                 "name": candidate.name,
                 "reason": candidate.reason,
+                "bucket": getattr(candidate, "bucket", None),
             }
-            for candidate in getattr(review, "candidates", ()) or ()
+            for candidate in (
+                tuple(getattr(review, "candidates", ()) or ())
+                + tuple(getattr(review, "growth_candidates", ()) or ())
+            )
         ]
         if candidates:
             self.client.collection("universe_candidates").document(ts).set(

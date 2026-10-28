@@ -15,7 +15,17 @@ _FINANCE_TERMS = (
 )
 
 
-def portfolio_keywords(snapshot):
+#: Toss ``securityType`` values for funds and notes. A position of one of
+#: these kinds gets no news section of its own - see portfolio_keywords().
+_FUND_TYPES = frozenset({"ETF", "ETN", "ETC"})
+
+
+def _is_fund(position, fund_symbols):
+    security_type = (getattr(position, "security_type", None) or "").strip().upper()
+    return security_type in _FUND_TYPES or getattr(position, "symbol", None) in fund_symbols
+
+
+def portfolio_keywords(snapshot, fund_symbols=()):
     """Distinct news-search keywords for currently held positions, in order.
 
     Feeds the report's news search with the account's actual stocks, not
@@ -30,9 +40,18 @@ def portfolio_keywords(snapshot):
     underlying company's own name does. Otherwise the display name is used
     rather than the ticker: "삼성전자" surfaces far more on Google News than
     the bare symbol "005930" would.
+
+    Funds are skipped - by Toss ``securityType``, or by ``fund_symbols`` (the
+    universe's index ETFs, for a holding whose type Toss did not report).
+    Headlines about a Treasury, gold or sector ETF are about the asset class,
+    not the holding, and the user asked for them to be left out. A fund that
+    declares an ``underlying`` is kept: TSLL's news is Tesla's news.
     """
+    fund_symbols = set(fund_symbols or ())
     seen = []
     for position in getattr(snapshot, "positions", None) or []:
+        if not getattr(position, "underlying", None) and _is_fund(position, fund_symbols):
+            continue
         keyword = getattr(position, "underlying", None) or getattr(position, "name", None) or ""
         keyword = keyword.strip()
         if keyword and keyword not in seen:

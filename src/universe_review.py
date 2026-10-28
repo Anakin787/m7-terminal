@@ -15,6 +15,11 @@ universe worth a human look. These are written to the report and to storage
 and go no further. Adding a name to the universe stays a human edit of
 config.yaml.
 
+Proposals come in two lists: ordinary large caps that widen the universe, and
+*growth* candidates - young companies in industries that may matter later,
+for the GROWTH bucket. Both stop at the report. Symbols the user has taken out
+on purpose (``excluded_candidates``) are never proposed back.
+
 The asymmetry is the whole design. A wrong veto costs one missed opportunity
 in one name for a few days. A wrong buy costs money, and a universe the model
 quietly rewrites is a strategy no backtest describes - which is exactly the
@@ -32,6 +37,7 @@ from dataclasses import dataclass
 from google.genai import types
 
 from src.analyst import ai_settings, gemini_client
+from src.strategy.universe import BUCKET_CORE, BUCKET_GROWTH
 
 #: Reasons a veto is allowed to exist. Sent to the model, and the returned
 #: category is checked against this list - a veto filed under anything else
@@ -47,6 +53,19 @@ VETO_CATEGORIES = (
 )
 
 _MAX_REASON_CHARS = 300
+
+_CANDIDATE_LIST_SCHEMA = {
+    "type": "array",
+    "items": {
+        "type": "object",
+        "properties": {
+            "symbol": {"type": "string"},
+            "name": {"type": "string"},
+            "reason": {"type": "string"},
+        },
+        "required": ["symbol", "name", "reason"],
+    },
+}
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -64,20 +83,10 @@ _RESPONSE_SCHEMA = {
                 "required": ["symbol", "category", "reason", "evidence"],
             },
         },
-        "candidates": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "symbol": {"type": "string"},
-                    "name": {"type": "string"},
-                    "reason": {"type": "string"},
-                },
-                "required": ["symbol", "name", "reason"],
-            },
-        },
+        "candidates": _CANDIDATE_LIST_SCHEMA,
+        "growth_candidates": _CANDIDATE_LIST_SCHEMA,
     },
-    "required": ["vetoes", "candidates"],
+    "required": ["vetoes", "candidates", "growth_candidates"],
 }
 
 
@@ -98,12 +107,16 @@ class Candidate:
     symbol: str
     name: str
     reason: str
+    #: The bucket it was proposed for. ``BUCKET_GROWTH`` for a growth
+    #: candidate, ``BUCKET_CORE`` otherwise.
+    bucket: str = BUCKET_CORE
 
 
 @dataclass(frozen=True)
 class UniverseReview:
     vetoes: tuple = ()
     candidates: tuple = ()
+    growth_candidates: tuple = ()
     #: Set when the review could not be produced. The caller reports it; it
     #: never becomes an empty-but-successful review, because "the model said
     #: nothing is wrong" and "we could not ask" are different facts.
@@ -111,7 +124,7 @@ class UniverseReview:
 
     @property
     def is_empty(self):
-        return not self.vetoes and not self.candidates
+        return not self.vetoes and not self.candidates and not self.growth_candidates
 
 
 def _clip(text, limit=_MAX_REASON_CHARS):
@@ -138,9 +151,14 @@ class UniverseReviewer:
         self.enabled = getattr(analyst_cfg, "universe_review", True)
         self.max_vetoes = getattr(analyst_cfg, "max_vetoes", 3)
         self.max_candidates = getattr(analyst_cfg, "max_candidates", 5)
+        self.max_growth_candidates = getattr(analyst_cfg, "max_growth_candidates", 3)
+        self.excluded = {
+            str(s).strip().upper()
+            for s in getattr(analyst_cfg, "excluded_candidates", ()) or ()
+        }
         self.client = client or gemini_client(api_key)
 
-    def review(self, universe_symbols, holdings=(), news_data=None):
+    def review(self, universe_symbols, holdings=(), news_data=None, growth_symbols=()):
         """Review ``universe_symbols`` against today's headlines.
 
         Returns a :class:`UniverseReview` whose contents have already been
@@ -157,20 +175,34 @@ class UniverseReviewer:
             return UniverseReview(error="유니버스가 비어 있습니다.")
 
         try:
-            raw = self._ask(sorted(known), holdings, news_data)
+            raw = self._ask(sorted(known), holdings, news_data, growth_symbols)
         except Exception as exc:  # noqa: BLE001 - a daily batch must not die here
             print(f"Error reviewing universe: {exc}")
             return UniverseReview(error=f"AI 유니버스 검토 실패: {exc}")
 
+        # Growth first, so a name the model put in both lists is shown where
+        # it was specifically argued for.
+        growth = self._clean_candidates(
+            raw.get("growth_candidates"),
+            known,
+            self.max_growth_candidates,
+            BUCKET_GROWTH,
+        )
+        taken = known | {c.symbol for c in growth}
         return UniverseReview(
             vetoes=self._clean_vetoes(raw.get("vetoes"), known),
-            candidates=self._clean_candidates(raw.get("candidates"), known),
+            candidates=self._clean_candidates(
+                raw.get("candidates"), taken, self.max_candidates, BUCKET_CORE
+            ),
+            growth_candidates=growth,
         )
 
     # ------------------------------------------------------------- internals
 
-    def _ask(self, symbols, holdings, news_data):
+    def _ask(self, symbols, holdings, news_data, growth_symbols=()):
         held = ", ".join(str(s) for s in holdings) or "None"
+        growth = ", ".join(str(s) for s in growth_symbols) or "None"
+        excluded = ", ".join(sorted(self.excluded)) or "None"
         prompt = f"""
 You are reviewing the *tradable universe* of an automated momentum strategy.
 You are NOT picking stocks and NOT forecasting returns - a backtested ranking
@@ -180,6 +212,10 @@ Current universe ({len(symbols)} symbols):
 {", ".join(symbols)}
 
 Currently held: {held}
+
+Of these, the GROWTH bucket (young companies in future industries): {growth}
+
+Never propose these - the user removed them on purpose: {excluded}
 
 Today's headlines (the ONLY evidence you may cite):
 {_headlines(news_data)}
@@ -203,6 +239,16 @@ Produce two lists.
    coverage over more of what the universe already holds. No leveraged,
    inverse, single-stock or otherwise exotic ETFs. Return an empty list if
    nothing stands out.
+
+3. "growth_candidates" - up to {self.max_growth_candidates} US-listed common
+   stocks NOT already in the universe for the GROWTH bucket: younger companies
+   in industries that may matter over the next decade (e.g. space, quantum
+   computing, AI infrastructure, robotics, advanced nuclear, gene editing).
+   They must trade on NYSE or Nasdaq with meaningful daily volume - no OTC,
+   no SPAC shells, no pre-revenue penny stocks, no ETFs of any kind. Prefer
+   an industry the GROWTH bucket does not cover yet. In "reason", say in one
+   or two sentences why it fits and what its main risk is. Return an empty
+   list if nothing stands out.
 
 Write "reason" in Korean. Symbols must be plain tickers, uppercase.
 """.strip()
@@ -261,7 +307,7 @@ Write "reason" in Korean. Symbols must be plain tickers, uppercase.
                 break
         return tuple(cleaned)
 
-    def _clean_candidates(self, rows, known):
+    def _clean_candidates(self, rows, known, limit, bucket):
         cleaned = []
         seen = set()
         for row in rows or []:
@@ -271,14 +317,19 @@ Write "reason" in Korean. Symbols must be plain tickers, uppercase.
             # A "candidate" already in the universe is noise, not a suggestion.
             if not symbol or symbol in known or symbol in seen:
                 continue
+            # The model may not know, or may not care, that the user took a
+            # name out. Proposing it back every morning is noise.
+            if symbol in self.excluded:
+                continue
             seen.add(symbol)
             cleaned.append(
                 Candidate(
                     symbol=symbol,
                     name=_clip(row.get("name"), 80) or symbol,
                     reason=_clip(row.get("reason")),
+                    bucket=bucket,
                 )
             )
-            if len(cleaned) >= self.max_candidates:
+            if len(cleaned) >= limit:
                 break
         return tuple(cleaned)

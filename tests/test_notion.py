@@ -249,6 +249,24 @@ def test_the_universe_review_separates_what_was_applied_from_what_was_only_sugge
     assert "자동 반영 안 됨" in text and "ASML" in text
 
 
+def test_growth_candidates_get_their_own_heading(snapshot):
+    from src.universe_review import Candidate, UniverseReview
+
+    pages = FakePages({"properties": {}})
+    review = UniverseReview(
+        growth_candidates=(
+            Candidate(symbol="OKLO", name="Oklo", reason="소형원전", bucket="GROWTH"),
+        ),
+    )
+
+    NotionReporter(config_for(), client=FakeClient(pages=pages)).create_report(
+        snapshot, {}, universe_review=review
+    )
+
+    text = str(pages.created["children"])
+    assert "미래성장 추천 종목" in text and "OKLO" in text
+
+
 def test_an_empty_universe_review_adds_no_section(snapshot):
     from src.universe_review import UniverseReview
 

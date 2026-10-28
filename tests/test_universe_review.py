@@ -113,6 +113,49 @@ def test_candidates_are_capped():
     assert len(review.candidates) == 2
 
 
+def test_growth_candidates_are_kept_apart_and_capped():
+    rows = [{"symbol": s, "name": s, "reason": "r"} for s in ("ASTS", "OKLO", "RXRX", "JOBY")]
+    review = reviewer_for(
+        {"vetoes": [], "candidates": [], "growth_candidates": rows}, max_growth_candidates=3
+    ).review(UNIVERSE)
+
+    assert [c.symbol for c in review.growth_candidates] == ["ASTS", "OKLO", "RXRX"]
+    assert all(c.bucket == "GROWTH" for c in review.growth_candidates)
+    assert review.candidates == ()
+
+
+def test_a_name_in_both_lists_is_shown_once_as_growth():
+    row = {"symbol": "OKLO", "name": "Oklo", "reason": "r"}
+    review = reviewer_for(
+        {"vetoes": [], "candidates": [row], "growth_candidates": [row]}
+    ).review(UNIVERSE)
+
+    assert review.candidates == ()
+    assert [c.symbol for c in review.growth_candidates] == ["OKLO"]
+
+
+def test_an_excluded_symbol_is_never_proposed_back():
+    # RKLB was taken out of the universe on purpose; a model suggesting it
+    # again every morning is noise, whichever list it lands in.
+    row = {"symbol": "rklb", "name": "Rocket Lab", "reason": "r"}
+    reviewer = reviewer_for(
+        {"vetoes": [], "candidates": [row], "growth_candidates": [row]},
+        excluded_candidates=("RKLB",),
+    )
+    review = reviewer.review(UNIVERSE)
+
+    assert review.candidates == () and review.growth_candidates == ()
+    assert "RKLB" in reviewer.client.models.calls[0]
+
+
+def test_a_review_with_only_growth_candidates_is_not_empty():
+    row = {"symbol": "OKLO", "name": "Oklo", "reason": "r"}
+    review = reviewer_for({"vetoes": [], "candidates": [], "growth_candidates": [row]}).review(
+        UNIVERSE
+    )
+    assert not review.is_empty
+
+
 # ------------------------------------------------------------------ failure
 
 

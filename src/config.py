@@ -197,6 +197,11 @@ class AnalystConfig:
     #: broken must not be able to halt the whole strategy.
     max_vetoes: int = 3
     max_candidates: int = 5
+    #: Proposals for the GROWTH bucket, listed apart from the ordinary ones.
+    max_growth_candidates: int = 3
+    #: Symbols the model must never propose - ones the user removed from the
+    #: universe on purpose and does not want suggested back.
+    excluded_candidates: tuple = ()
     #: A veto lapses this many days after the run that raised it, unless a
     #: later run raises it again. Nothing an AI says stays true by default.
     veto_ttl_days: int = 7
@@ -648,6 +653,10 @@ def load_config(path=DEFAULT_CONFIG_PATH, load_env=True):
         universe_review=_as_bool(raw_ai.get("universe_review"), True),
         max_vetoes=_as_int(raw_ai.get("max_vetoes"), 3),
         max_candidates=_as_int(raw_ai.get("max_candidates"), 5),
+        max_growth_candidates=_as_int(raw_ai.get("max_growth_candidates"), 3),
+        excluded_candidates=tuple(
+            str(s).strip().upper() for s in raw_ai.get("excluded_candidates") or () if s
+        ),
         veto_ttl_days=_as_int(raw_ai.get("veto_ttl_days"), 7),
     )
 
